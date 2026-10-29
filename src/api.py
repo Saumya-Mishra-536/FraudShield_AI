@@ -163,11 +163,17 @@ def transaction_to_array(tx: TransactionRequest) -> np.ndarray:
 
 
 def get_fraud_proba(X_scaled: np.ndarray) -> float:
-    """Run inference via XGBoost booster, return sigmoid probability."""
+    """Run inference with the same best boosting iteration used by validation."""
     import xgboost as xgb
     dmat = xgb.DMatrix(X_scaled, feature_names=_feature_names)
-    raw = _model["model"].predict(dmat)
-    return float(1.0 / (1.0 + np.exp(-raw[0])))
+    booster = _model["model"]
+    best_iteration = getattr(booster, "best_iteration", None)
+    if best_iteration is not None:
+        raw = booster.predict(dmat, iteration_range=(0, best_iteration + 1))
+    else:
+        raw = booster.predict(dmat)
+    score = float(np.clip(raw[0], -40.0, 40.0))
+    return float(1.0 / (1.0 + np.exp(-score)))
 
 
 def classify_risk(proba: float) -> tuple[str, str]:
