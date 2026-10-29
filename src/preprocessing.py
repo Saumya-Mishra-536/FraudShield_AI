@@ -8,13 +8,13 @@ Dataset specifics:
              We do NOT re-scale these — they are already zero-mean, unit-variance.
   - Time:   Seconds since first transaction. Encodes time-of-day fraud patterns.
              We apply CYCLIC encoding (sin/cos) after converting to hour-of-day.
-  - Amount: Raw EUR amount. Right-skewed → log1p transform applied.
+  - Amount: Raw amount in unspecified dataset units. Right-skewed → log1p transform applied.
   - Class:  Target (0=legit, 1=fraud). 0.173% fraud rate.
 
 Design Decisions:
   - SMOTE applied ONLY on training set (critical: never on test/val)
   - V1–V28 passed through as-is (already standardized by PCA pipeline)
-  - Only Amount_log and Time features are scaled via StandardScaler
+  - StandardScaler is fitted on all engineered features using training data only
   - StandardScaler fitted on train only, applied to test (no leakage)
 """
 
@@ -43,7 +43,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         Time is cumulative seconds over ~48h. We extract hour-of-day via
         (Time % 86400) / 3600, then encode cyclically so 23:00→00:00 is
         treated as adjacent (not maximally distant).
-    - V1–V28: Passed through unchanged (already PCA-transformed & standardized)
+    - V1–V28: Passed through unchanged before the fitted StandardScaler is applied
     - Original Time and Amount columns dropped post-transformation.
 
     Args:
