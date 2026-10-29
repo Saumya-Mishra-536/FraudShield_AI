@@ -2,111 +2,70 @@
 Kaggle Credit Card Fraud Dataset Loader
 ========================================
 Dataset: Credit Card Fraud Detection — MLG-ULB (Université Libre de Bruxelles)
-Source:  https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud
-
-Schema (31 columns):
-  Time   — Seconds elapsed since first transaction in dataset (~48h window)
-  V1–V28 — PCA-transformed features (original features anonymized for privacy)
-  Amount — Transaction amount in EUR
-  Class  — 0 = legitimate, 1 = fraudulent
-
-Dataset stats:
-  284,807 total transactions
-  492 fraudulent (0.173% fraud rate)
-  0 missing values
-  2 days of European cardholder transactions
+Source: https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud
 """
-
-import pandas as pd
-import numpy as np
 import os
-import sys
+import pandas as pd
 
 EXPECTED_ROWS = 284807
 EXPECTED_FRAUD = 492
-EXPECTED_COLS = 31
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def load_and_validate(path: str) -> pd.DataFrame:
-    """
-    Load the Kaggle creditcard dataset and validate its integrity.
-    Accepts .csv or .csv.gz formats.
-    """
+    """Load a CSV or gzip-compressed CSV and validate its expected schema."""
     print(f"[Loader] Reading: {path}")
-
-    if path.endswith(".gz"):
-        df = pd.read_csv(path, compression="gzip")
-    else:
-        df = pd.read_csv(path)
-
-    # --- Schema validation ---
+    df = pd.read_csv(path, compression="gzip" if path.lower().endswith(".gz") else None)
     expected_cols = ["Time", "Amount", "Class"] + [f"V{i}" for i in range(1, 29)]
-    missing = [c for c in expected_cols if c not in df.columns]
+    missing = [column for column in expected_cols if column not in df.columns]
     if missing:
         raise ValueError(f"Missing expected columns: {missing}")
 
-    # --- Null check ---
-    nulls = df.isnull().sum().sum()
-    if nulls > 0:
-        print(f"[Loader] WARNING: {nulls} null values found. Will drop.")
-        df = df.dropna()
+    if df.isnull().values.any():
+        null_count = int(df.isnull().sum().sum())
+        raise ValueError(
+            f"Dataset contains {null_count} missing values. "
+            "Resolve missing values explicitly before training."
+        )
+    if not df["Class"].isin([0, 1]).all():
+        raise ValueError("Class must contain only binary labels 0 and 1.")
+    if (df["Amount"] < 0).any():
+        raise ValueError("Amount contains negative values.")
 
-    # --- Stats report ---
-    n_fraud = int(df["Class"].sum())
-    n_legit = len(df) - n_fraud
-    fraud_rate = df["Class"].mean()
-
-    print(f"[Loader] ✓ Loaded {len(df):,} transactions")
-    print(f"[Loader]   Legitimate: {n_legit:,} ({1 - fraud_rate:.4%})")
-    print(f"[Loader]   Fraudulent: {n_fraud:,} ({fraud_rate:.4%})")
-    print(f"[Loader]   Time range: {df['Time'].min():.0f}s – {df['Time'].max():.0f}s "
-          f"(~{df['Time'].max() / 3600:.1f} hours)")
-    print(f"[Loader]   Amount range: €{df['Amount'].min():.2f} – €{df['Amount'].max():,.2f} "
-          f"(median: €{df['Amount'].median():.2f})")
-
+    fraud_count = int(df["Class"].sum())
+    print(f"[Loader] Loaded {len(df):,} transactions")
+    print(f"[Loader] Legitimate: {len(df) - fraud_count:,}")
+    print(f"[Loader] Fraudulent: {fraud_count:,} ({df['Class'].mean():.4%})")
+    print(
+        f"[Loader] Time range: {df['Time'].min():.0f}s–{df['Time'].max():.0f}s; "
+        f"amount range: {df['Amount'].min():.2f}–{df['Amount'].max():,.2f}"
+    )
     if len(df) != EXPECTED_ROWS:
-        print(f"[Loader] WARNING: Expected {EXPECTED_ROWS:,} rows, got {len(df):,}")
-    if n_fraud != EXPECTED_FRAUD:
-        print(f"[Loader] WARNING: Expected {EXPECTED_FRAUD} fraud cases, got {n_fraud}")
-
+        print(f"[Loader] WARNING: expected {EXPECTED_ROWS:,} rows, found {len(df):,}")
+    if fraud_count != EXPECTED_FRAUD:
+        print(f"[Loader] WARNING: expected {EXPECTED_FRAUD} fraud cases, found {fraud_count}")
     return df
 
 
 def get_dataset(gz_path: str = None, csv_path: str = None) -> pd.DataFrame:
-    """
-    Convenience function: load from .gz or .csv, whichever exists.
-
-    Priority:
-    1. Explicit gz_path argument
-    2. Explicit csv_path argument
-    3. Auto-detect in data/ directory
-    """
-    # Priority 1: explicit gz
-    if gz_path and os.path.exists(gz_path):
-        return load_and_validate(gz_path)
-
-    # Priority 2: explicit csv
-    if csv_path and os.path.exists(csv_path):
-        return load_and_validate(csv_path)
-
-    # Priority 3: auto-detect in data/
-    auto_gz = os.path.join(DATA_DIR, "creditcard.csv.gz")
-    auto_csv = os.path.join(DATA_DIR, "creditcard.csv")
-
-    if os.path.exists(auto_gz):
-        return load_and_validate(auto_gz)
-    if os.path.exists(auto_csv):
-        return load_and_validate(auto_csv)
+    """Load an explicit path or auto-detect common dataset filenames."""
+    candidates = [p for p in (gz_path, csv_path) if p]
+    candidates.extend([
+        os.path.join(DATA_DIR, "creditcard.csv.gz"),
+        os.path.join(DATA_DIR, "creditcard.csv..gz"),
+        os.path.join(DATA_DIR, "creditcard.csv"),
+    ])
+    for path in candidates:
+        if os.path.isfile(path):
+            return load_and_validate(path)
 
     raise FileNotFoundError(
-        "Dataset not found. Download from:\n"
-        "  https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud\n"
-        f"Place creditcard.csv or creditcard.csv.gz in: {DATA_DIR}"
+        "Credit card dataset not found. Download it from "
+        "https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud and place "
+        f"creditcard.csv or creditcard.csv.gz in {DATA_DIR}."
     )
 
 
 if __name__ == "__main__":
-    df = get_dataset()
-    print("\n[Loader] Sample rows:")
-    print(df[["Time", "Amount", "Class"]].head(5).to_string())
+    dataset = get_dataset()
+    print(dataset[["Time", "Amount", "Class"]].head().to_string())
