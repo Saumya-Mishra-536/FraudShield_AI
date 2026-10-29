@@ -48,7 +48,7 @@ class TransactionRequest(BaseModel):
     """
     Transaction features matching Kaggle Credit Card Fraud dataset schema.
     V1–V28 are PCA-transformed (already anonymized by the data provider).
-    Amount and Time are the only raw features.
+    Amount and Time are the only raw features. The dataset does not specify a currency.
     """
     # PCA-transformed behavioral features
     V1: float;  V2: float;  V3: float;  V4: float;  V5: float
@@ -59,7 +59,7 @@ class TransactionRequest(BaseModel):
     V26: float; V27: float; V28: float
 
     # Raw features (will be engineered in API)
-    Amount: float = Field(..., ge=0.0, description="Transaction amount in EUR")
+    Amount: float = Field(..., ge=0.0, description="Transaction amount in the dataset units; currency is unspecified")
     Time: float = Field(..., ge=0.0,
                         description="Seconds elapsed since first transaction in dataset")
 
@@ -91,7 +91,7 @@ class RiskScoreResponse(BaseModel):
     decision: str
     explanation: list[str]
     top_risk_factors: list[dict]
-    expected_loss_eur: float
+    expected_exposure_amount_units: float
     recommendation: str
     model_version: str
 
@@ -180,7 +180,7 @@ def classify_risk(proba: float) -> tuple[str, str]:
     """
     Map fraud probability to operational risk tier.
 
-    Tiers calibrated for 0.17% base rate and C_FN/C_FP = 4:
+    Heuristic demo tiers only; they are not validated operational thresholds.
       LOW      (< 0.05): Allow — very low risk
       MEDIUM   (0.05–0.30): Challenge with step-up auth
       HIGH     (0.30–0.70): Block and notify cardholder
@@ -264,7 +264,7 @@ def model_info():
         "dataset": "Kaggle Credit Card Fraud (MLG-ULB) — 284,807 transactions",
         "version": "1.0.0",
         "decision_threshold": _model["threshold"],
-        "cost_config": {"C_FP_USD": DEFAULT_C_FP, "C_FN_USD": DEFAULT_C_FN},
+        "cost_config": {"C_FP_assumption_units": DEFAULT_C_FP, "C_FN_assumption_units": DEFAULT_C_FN, "note": "Illustrative units, not validated monetary costs"},
         "asymmetry_ratio": f"{DEFAULT_C_FN / DEFAULT_C_FP:.1f}x",
         "feature_count": len(_feature_names or FEATURE_COLS),
         "features": "V1–V28 (PCA) + Amount_log + Time_sin + Time_cos",
@@ -303,7 +303,7 @@ def risk_score(tx: TransactionRequest):
     risk_tier, decision = classify_risk(proba)
     explanation = generate_explanation(tx, proba)
     top_factors = get_top_risk_factors(X)
-    expected_loss_eur = round(proba * tx.Amount, 2)
+    # This is a probability-weighted amount exposure proxy, not a validated loss estimate.\n    expected_exposure_amount_units = round(proba * tx.Amount, 2)
 
     recommendation_map = {
         "ALLOW":      "Process transaction normally.",
@@ -320,7 +320,7 @@ def risk_score(tx: TransactionRequest):
         "decision": decision,
         "explanation": explanation,
         "top_risk_factors": top_factors,
-        "expected_loss_eur": expected_loss_eur,
+        "expected_exposure_amount_units": expected_exposure_amount_units,
         "recommendation": recommendation_map[decision],
         "model_version": "asymmetric-kaggle-v1.0",
     }
