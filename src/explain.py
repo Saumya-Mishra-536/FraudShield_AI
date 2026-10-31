@@ -136,3 +136,41 @@ class TransactionExplainer:
             "full_ranking": ranking,
         }
 
+
+def generate_shap_narrative(
+    local_explanation: Dict[str, Any],
+    decision_action: str,
+    top_k: int = 3,
+) -> List[str]:
+    """
+    Generate natural narrative explanations derived 100% from actual SHAP attributions.
+    Contains no hardcoded feature rules and no currency assumptions.
+    """
+    narratives: List[str] = []
+    up_factors = local_explanation.get("top_risk_increasing_factors", [])[:top_k]
+    down_factors = local_explanation.get("top_risk_decreasing_factors", [])[:top_k]
+
+    if up_factors:
+        up_strs = [
+            f"{f['feature']} (value: {f['raw_value']}, SHAP: +{f['shap_value']:.4f})"
+            for f in up_factors
+        ]
+        narratives.append(
+            f"Risk-elevating factors (pushed score toward fraud): {'; '.join(up_strs)}."
+        )
+    else:
+        narratives.append("No features significantly elevated the risk score above the baseline fraud rate.")
+
+    if down_factors:
+        down_strs = [
+            f"{f['feature']} (value: {f['raw_value']}, SHAP: {f['shap_value']:.4f})"
+            for f in down_factors
+        ]
+        narratives.append(
+            f"Risk-mitigating factors (consistent with legitimate transactions): {'; '.join(down_strs)}."
+        )
+
+    narratives.append(
+        f"Operational action: {decision_action} based on calibrated decision threshold."
+    )
+    return narratives
