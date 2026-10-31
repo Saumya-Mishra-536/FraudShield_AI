@@ -160,7 +160,8 @@ def preprocess(
         "y_val": y_val,
         "y_test": y_test,
         "feature_names": FEATURE_COLS,
-        "class_counts": counts_before,\n        "class_counts_after_resampling": counts_after,
+        "class_counts": counts_before,
+        "class_counts_after_resampling": counts_after,
         "scaler": scaler,
     }
 

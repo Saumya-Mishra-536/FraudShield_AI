@@ -440,10 +440,24 @@ def run_full_evaluation(sym_model, asym_model, data: dict,
 
 
 if __name__ == "__main__":
-    from src.train import train
-    result = train()
-    run_full_evaluation(
-        result["symmetric_model"],
-        result["asymmetric_model"],
-        result["data"]
-    )
+    import json
+    from data.load_kaggle_data import get_dataset
+    from src.preprocessing import preprocess
+    from src.model import SymmetricModel, AsymmetricModel
+    from src.loss_functions import DEFAULT_C_FP, DEFAULT_C_FN
+    import os, joblib
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    model_dir = os.path.join(ROOT, "models")
+    sym_path = os.path.join(model_dir, "symmetric_model.pkl")
+    asym_path = os.path.join(model_dir, "asymmetric_model.pkl")
+
+    raw = get_dataset()
+    data = preprocess(raw, scaler_path=os.path.join(model_dir, "scaler.pkl"))
+
+    sym = SymmetricModel()
+    sym.load(sym_path)
+    asym = AsymmetricModel()
+    asym.load(asym_path)
+
+    run_full_evaluation(sym, asym, data)

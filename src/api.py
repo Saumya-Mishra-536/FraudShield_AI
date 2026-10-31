@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.preprocessing import engineer_features, FEATURE_COLS
 from src.loss_functions import DEFAULT_C_FP, DEFAULT_C_FN
+from src.explain import TransactionExplainer
 import pandas as pd
 
 # --- Paths ---
@@ -40,6 +41,7 @@ SCALER_PATH = os.path.join(MODELS_DIR, "scaler.pkl")
 _model = None
 _scaler = None
 _feature_names = None
+_explainer = None
 
 
 # ─── Pydantic Request/Response Models ─────────────────────────────────────────
@@ -91,6 +93,8 @@ class RiskScoreResponse(BaseModel):
     decision: str
     explanation: list[str]
     top_risk_factors: list[dict]
+    local_shap_drivers: list[dict] = []
+    global_importance_reference: list[dict] = []
     expected_exposure_amount_units: float
     recommendation: str
     model_version: str
@@ -116,7 +120,7 @@ app = FastAPI(
 
 
 def load_artifacts():
-    global _model, _scaler, _feature_names
+    global _model, _scaler, _feature_names, _explainer
     if not os.path.exists(ASYM_MODEL_PATH):
         raise RuntimeError(
             f"Model not found at {ASYM_MODEL_PATH}. Run: python -m src.train"
@@ -129,7 +133,8 @@ def load_artifacts():
     _model = bundle
     _scaler = joblib.load(SCALER_PATH)
     _feature_names = bundle.get("feature_names", FEATURE_COLS)
-    print(f"[API] Asymmetric model loaded (threshold={bundle['threshold']:.4f})")
+    _explainer = TransactionExplainer(_model["model"], _feature_names)
+    print(f"[API] Asymmetric model and SHAP explainer loaded (threshold={bundle['threshold']:.4f})")
 
 
 @app.on_event("startup")
@@ -293,7 +298,7 @@ def predict(tx: TransactionRequest):
 
 @app.post("/risk-score", response_model=RiskScoreResponse, tags=["Prediction"])
 def risk_score(tx: TransactionRequest):
-    """Detailed risk assessment with tier, explanation, and top features."""
+    """Detailed risk assessment with tier, explanation, local SHAP attribution, and global importance."""
     if _model is None:
         raise HTTPException(status_code=503, detail="Model not loaded. Run training first.")
 
@@ -303,7 +308,21 @@ def risk_score(tx: TransactionRequest):
     risk_tier, decision = classify_risk(proba)
     explanation = generate_explanation(tx, proba)
     top_factors = get_top_risk_factors(X)
-    # This is a probability-weighted amount exposure proxy, not a validated loss estimate.\n    expected_exposure_amount_units = round(proba * tx.Amount, 2)
+    
+    # Compute local SHAP attribution for this specific transaction
+    local_drivers = []
+    global_reference = []
+    if _explainer is not None:
+        raw_dict = {f"V{i}": getattr(tx, f"V{i}") for i in range(1, 29)}
+        raw_dict["Amount"] = tx.Amount
+        raw_dict["Time"] = tx.Time
+        shap_res = _explainer.explain_instance(X, raw_feature_dict=raw_dict, top_k=5)
+        local_drivers = shap_res["top_drivers_by_magnitude"]
+        global_ref = _explainer.get_global_feature_importance(importance_type="gain", top_k=5)
+        global_reference = global_ref["top_features"]
+
+    # This is a probability-weighted amount exposure proxy, not a validated loss estimate.
+    expected_exposure_amount_units = round(proba * tx.Amount, 2)
 
     recommendation_map = {
         "ALLOW":      "Process transaction normally.",
@@ -320,10 +339,39 @@ def risk_score(tx: TransactionRequest):
         "decision": decision,
         "explanation": explanation,
         "top_risk_factors": top_factors,
+        "local_shap_drivers": local_drivers,
+        "global_importance_reference": global_reference,
         "expected_exposure_amount_units": expected_exposure_amount_units,
         "recommendation": recommendation_map[decision],
         "model_version": "asymmetric-kaggle-v1.0",
     }
+
+
+@app.post("/explain", tags=["Explainability"])
+def explain_transaction(tx: TransactionRequest):
+    """
+    Detailed local explainability endpoint using SHAP TreeExplainer.
+    Returns additive SHAP values breaking down exact contributions to log-odds.
+    """
+    if _model is None or _explainer is None:
+        raise HTTPException(status_code=503, detail="Model/Explainer not loaded. Run training first.")
+
+    X = transaction_to_array(tx)
+    raw_dict = {f"V{i}": getattr(tx, f"V{i}") for i in range(1, 29)}
+    raw_dict["Amount"] = tx.Amount
+    raw_dict["Time"] = tx.Time
+    return _explainer.explain_instance(X, raw_feature_dict=raw_dict, top_k=10)
+
+
+@app.get("/features/global-importance", tags=["Explainability"])
+def global_feature_importance(importance_type: str = "gain", top_k: int = 15):
+    """
+    Returns dataset-wide global feature importance derived from tree splits.
+    Distinguished from local instance-level SHAP attributions.
+    """
+    if _explainer is None:
+        raise HTTPException(status_code=503, detail="Explainer not loaded.")
+    return _explainer.get_global_feature_importance(importance_type=importance_type, top_k=top_k)
 
 
 if __name__ == "__main__":
