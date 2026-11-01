@@ -344,6 +344,7 @@ def predict(tx: TransactionRequest):
     proba = get_fraud_proba(X)
     decision = _decision_engine.evaluate(proba)
 
+    probability_calibrated = bool(_model and _model.get("probability_calibrated", _model.get("calibrator") is not None))
     return {
         "fraud_probability": round(decision.fraud_probability, 6),
         "probability_calibrated": probability_calibrated,
@@ -353,9 +354,6 @@ def predict(tx: TransactionRequest):
         "decision": decision.decision,
         "risk_tier": decision.risk_tier,
         "threshold_used": decision.threshold_used,
-        "probability_calibrated": bool(_model.get("probability_calibrated", _model.get("calibrator") is not None)),
-        "score_semantics": "calibrated_probability" if _model.get("probability_calibrated", _model.get("calibrator") is not None) else "uncalibrated_model_risk_score",
-        "calibration_method": _model.get("calibration_method"),
         "model_version": "asymmetric-v1.1",
     }
 
@@ -389,6 +387,9 @@ def risk_score(tx: TransactionRequest):
 
     return {
         "fraud_probability": round(decision.fraud_probability, 6),
+        "probability_calibrated": probability_calibrated,
+        "score_semantics": "calibrated_probability" if probability_calibrated else "uncalibrated_model_risk_score",
+        "calibration_method": _model.get("calibration_method") if _model else None,
         "is_fraud": decision.is_fraud,
         "risk_tier": decision.risk_tier,
         "risk_score": round(decision.fraud_probability * 100.0, 1),
