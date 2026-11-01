@@ -22,6 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api import app, load_artifacts, transaction_to_array, get_fraud_proba
+from src.calibration import model_output_to_score
 from src.decision_engine import DecisionEngine
 from src.explain import TransactionExplainer, generate_shap_narrative
 from src.preprocessing import FEATURE_COLS, engineer_features
@@ -89,7 +90,7 @@ def test_full_workflow_end_to_end_parity(api_client, artifacts, profile):
     import xgboost as xgb
     dmat = xgb.DMatrix(X_scaled, feature_names=FEATURE_COLS)
     raw = bundle["model"].predict(dmat, iteration_range=(0, bundle["model"].best_iteration + 1))[0]
-    direct_prob = float(1.0 / (1.0 + np.exp(-np.clip(raw, -40, 40))))
+    direct_prob = model_output_to_score(raw, output_type=bundle.get("output_type", "raw_margin"), calibrator=bundle.get("calibrator"))
     direct_decision = engine.evaluate(direct_prob)
     direct_shap = explainer.explain_instance(X_scaled, raw_feature_dict=payload, top_k=3)
 

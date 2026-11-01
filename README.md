@@ -1,7 +1,7 @@
 #  FraudShield AI — Cost-Sensitive Machine Learning & Explainable Fraud Architecture
 
 [![tests](https://github.com/Saumya-Mishra-536/FraudShield_AI/actions/workflows/tests.yml/badge.svg)](https://github.com/Saumya-Mishra-536/FraudShield_AI/actions)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![XGBoost 2.x](https://img.shields.io/badge/XGBoost-2.x-orange.svg)](https://xgboost.readthedocs.io/)
 [![SHAP](https://img.shields.io/badge/Explainability-SHAP%20TreeExplainer-green.svg)](https://shap.readthedocs.io/)
 [![FastAPI](https://img.shields.io/badge/API-FastAPI-teal.svg)](https://fastapi.tiangolo.com/)
@@ -124,8 +124,10 @@ FraudShield AI strictly separates **local transaction explanations** from **glob
 
 ## 🚀 Quickstart & Setup
 
+The dashboard currently performs inference locally in the Streamlit process using the saved XGBoost model and scaler; it does not call the FastAPI service.
+
 ### 1. Installation
-Requires Python 3.10 or newer (tested on macOS and Linux).
+Requires Python 3.12. CI installs the exact versions in `requirements.txt` and runs against the committed model and evaluation artifacts.
 
 ```bash
 git clone https://github.com/Saumya-Mishra-536/FraudShield_AI.git
@@ -154,11 +156,15 @@ python3 -m src.train --use-smote   # Apply SMOTE to training split only
 ```
 
 ### 3. Run the Full Test Suite
-Executes 43 comprehensive tests covering core logic, mathematical validation of gradients/Hessians, data-free smoke tests, and API integration:
+CI verifies committed model and evaluation artifacts, then runs real-artifact integration tests and the remaining suite under Python 3.12 with pinned dependencies:
 
 ```bash
 pytest tests/ -v
 ```
+
+### Probability calibration and score interpretation
+
+The asymmetric model uses a custom weighted logistic objective, so its raw sigmoid score is a ranking/risk score, not automatically a posterior probability. Training fits Platt scaling on validation raw margins, selects its operating threshold from calibrated validation scores, and reports held-out Brier score plus a reliability curve at `outputs/plots/calibration_curve.png`. The held-out test split is not used to fit calibration. The API includes `probability_calibrated` and `score_semantics`; expected exposure is returned only for calibrated output. Older artifacts without a calibrator are explicitly reported as uncalibrated model risk scores and return no expected-exposure estimate until retrained with `python -m src.train`.
 
 ### 4. Launch the Interactive Dashboard
 Opens the Streamlit operations and simulation interface:

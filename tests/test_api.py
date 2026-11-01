@@ -47,6 +47,8 @@ def ensure_test_artifacts():
     booster = xgb.train(params, dtrain, num_boost_round=5)
     bundle = {
         "model": booster,
+        "output_type": "probability",
+        "probability_calibrated": False,
         "threshold": 0.160,
         "feature_names": FEATURE_COLS,
     }
@@ -106,6 +108,8 @@ def test_predict_endpoint(client):
     assert data["decision"] in ["ALLOW", "CHALLENGE", "BLOCK", "HARD_BLOCK"]
     assert data["risk_tier"] in ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
     assert 0.0 <= data["fraud_probability"] <= 1.0
+    assert data["probability_calibrated"] is False
+    assert data["score_semantics"] == "uncalibrated_model_risk_score"
 
 
 def test_predict_and_risk_score_never_contradict(client):
@@ -133,6 +137,10 @@ def test_risk_score_distinguishes_local_and_global_explanations(client):
     assert "risk_tier" in data
     assert "local_shap_drivers" in data
     assert len(data["local_shap_drivers"]) > 0
+    if data["probability_calibrated"]:
+        assert data["expected_exposure_amount_units"] == pytest.approx(data["fraud_probability"] * payload["Amount"], abs=0.01)
+    else:
+        assert data["expected_exposure_amount_units"] is None
 
     top_local = data["local_shap_drivers"][0]
     assert "shap_value" in top_local

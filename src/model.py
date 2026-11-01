@@ -10,6 +10,8 @@ import joblib
 import numpy as np
 import xgboost as xgb
 
+from src.calibration import fit_platt_calibrator
+
 from src.loss_functions import (
     DEFAULT_C_FP, DEFAULT_C_FN, optimal_threshold,
     xgboost_asymmetric_objective,
@@ -23,6 +25,8 @@ class BaseFraudModel:
         self.threshold = threshold
         self.model = None
         self.feature_names = None
+        self.calibrator = None
+        self.calibration_method = None
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         raise NotImplementedError
@@ -43,7 +47,11 @@ class BaseFraudModel:
             os.makedirs(directory, exist_ok=True)
         joblib.dump(
             {"model": self.model, "threshold": self.threshold,
-             "feature_names": self.feature_names},
+             "feature_names": self.feature_names,
+             "output_type": "probability" if isinstance(self, SymmetricModel) else "raw_margin",
+             "calibrator": self.calibrator,
+             "probability_calibrated": self.calibrator is not None,
+             "calibration_method": self.calibration_method},
             path,
         )
         print(f"[{self.__class__.__name__}] Saved to {path}")
@@ -53,6 +61,8 @@ class BaseFraudModel:
         self.model = bundle["model"]
         self.threshold = float(bundle["threshold"])
         self.feature_names = bundle["feature_names"]
+        self.calibrator = bundle.get("calibrator")
+        self.calibration_method = bundle.get("calibration_method")
         print(f"[{self.__class__.__name__}] Loaded from {path}")
 
 
@@ -129,15 +139,22 @@ class AsymmetricModel(BaseFraudModel):
         )
         self._evals_result = evals_result
         print(f"[AsymmetricModel] Best iteration: {self.model.best_iteration}")
+        self.calibrator = fit_platt_calibrator(self.predict_raw_score(X_val), y_val)
+        self.calibration_method = "Platt scaling fitted on validation raw margins"
         self.tune_threshold(X_val, y_val, self.c_fp, self.c_fn)
 
-    def predict_proba(self, X):
+    def predict_raw_score(self, X):
+        """Return raw XGBoost margins for calibration or diagnostics."""
         dmatrix = xgb.DMatrix(X, feature_names=self.feature_names)
         best_iteration = getattr(self.model, "best_iteration", None)
         if best_iteration is not None:
-            raw_scores = self.model.predict(dmatrix, iteration_range=(0, best_iteration + 1))
-        else:
-            raw_scores = self.model.predict(dmatrix)
+            return self.model.predict(dmatrix, iteration_range=(0, best_iteration + 1))
+        return self.model.predict(dmatrix)
+
+    def predict_proba(self, X):
+        raw_scores = self.predict_raw_score(X)
+        if self.calibrator is not None:
+            return self.calibrator.predict_proba(np.asarray(raw_scores).reshape(-1, 1))[:, 1]
         return 1.0 / (1.0 + np.exp(-np.clip(raw_scores, -40, 40)))
 
     def get_feature_importance(self, importance_type: str = "gain") -> dict:

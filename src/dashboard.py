@@ -30,6 +30,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from src.calibration import model_output_to_score
 from src.decision_engine import DecisionEngine
 from src.explain import TransactionExplainer, generate_shap_narrative
 from src.loss_functions import DEFAULT_C_FN, DEFAULT_C_FP, asymmetric_cost
@@ -476,7 +477,7 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
                 else:
                     raw_score = booster.predict(dmat)[0]
 
-                proba_score = float(1.0 / (1.0 + np.exp(-np.clip(raw_score, -40, 40))))
+                proba_score = model_output_to_score(raw_score, output_type=asym_model.get("output_type", "raw_margin"), calibrator=asym_model.get("calibrator"))
 
                 # Unified Decision Engine Evaluation
                 decision = decision_engine.evaluate(proba_score)
@@ -505,7 +506,10 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
             }.get(decision.decision, "badge-allow")
 
             r1, r2, r3, r4 = st.columns(4)
-            r1.metric("Predicted Fraud Probability", f"{decision.fraud_probability:.4%}")
+            calibrated = bool(asym_model.get("probability_calibrated", asym_model.get("calibrator") is not None))
+            r1.metric("Calibrated Fraud Probability" if calibrated else "Model Risk Score", f"{decision.fraud_probability:.4%}")
+            if not calibrated:
+                st.caption("This artifact has no saved calibrator; the value is an uncalibrated model risk score, not a posterior probability.")
             r2.metric("Decision Threshold Used", f"{decision.threshold_used:.3f}")
             r3.metric("Assigned Risk Tier", decision.risk_tier)
             with r4:

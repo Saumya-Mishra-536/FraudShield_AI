@@ -38,6 +38,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+from src.calibration import model_output_to_score
 from src.decision_engine import DecisionEngine, RiskDecision
 from src.explain import TransactionExplainer, generate_shap_narrative
 from src.loss_functions import DEFAULT_C_FN, DEFAULT_C_FP
@@ -54,6 +55,7 @@ _scaler: Any = None
 _feature_names: Optional[List[str]] = None
 _explainer: Optional[TransactionExplainer] = None
 _decision_engine: Optional[DecisionEngine] = None
+_startup_error: Optional[str] = None
 
 
 # ─── Pydantic Request & Response Schemas ─────────────────────────────────────
@@ -113,25 +115,31 @@ class TransactionRequest(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    fraud_probability: float = Field(..., description="Estimated posterior fraud probability [0.0, 1.0].")
+    fraud_probability: float = Field(..., description="Model score in [0, 1]; treat as posterior only when probability_calibrated is true.")
     is_fraud: bool = Field(..., description="True if fraud_probability >= threshold_used.")
     decision: str = Field(..., description="Action: ALLOW, CHALLENGE, BLOCK, or HARD_BLOCK.")
     risk_tier: str = Field(..., description="Risk tier: LOW, MEDIUM, HIGH, or CRITICAL.")
     threshold_used: float = Field(..., description="Primary calibrated decision threshold.")
+    probability_calibrated: bool
+    score_semantics: str
+    calibration_method: Optional[str] = None
     model_version: str = Field(..., description="Active model deployment version.")
 
 
 class RiskScoreResponse(BaseModel):
-    fraud_probability: float
+    fraud_probability: float = Field(..., description="Model score in [0, 1]; consult probability_calibrated before treating it as a posterior.")
+    probability_calibrated: bool
+    score_semantics: str
+    calibration_method: Optional[str] = None
     is_fraud: bool
     risk_tier: str
-    risk_score: float = Field(..., description="Fraud probability scaled to 0-100.")
+    risk_score: float = Field(..., description="Model score scaled to 0-100.")
     decision: str
     explanation: List[str] = Field(default_factory=list, description="SHAP-derived narrative explanation.")
     top_risk_factors: List[Dict[str, Any]] = Field(default_factory=list, description="Top features by global gain.")
     local_shap_drivers: List[Dict[str, Any]] = Field(default_factory=list, description="Instance-specific local SHAP attributions.")
     global_importance_reference: List[Dict[str, Any]] = Field(default_factory=list, description="Dataset-level global split importance reference.")
-    expected_exposure_amount_units: float = Field(..., description="Probability-weighted amount exposure proxy (P * Amount).")
+    expected_exposure_amount_units: Optional[float] = Field(None, description="P * Amount, returned only when a saved calibrator is available.")
     recommendation: str = Field(..., description="Operational action recommendation.")
     model_version: str
 
@@ -142,6 +150,9 @@ class HealthResponse(BaseModel):
     scaler_loaded: bool
     explainer_loaded: bool
     calibrated_threshold: Optional[float] = None
+    probability_calibrated: bool = False
+    calibration_method: Optional[str] = None
+    startup_error: Optional[str] = None
 
 
 # ─── Application Setup ────────────────────────────────────────────────────────
@@ -180,15 +191,26 @@ def load_artifacts() -> None:
 
     # Initialize SHAP TreeExplainer on booster
     _explainer = TransactionExplainer(_model["model"], _feature_names)
-    print(f"[API] Artifacts successfully loaded (Calibrated Threshold: {calibrated_t:.4f})")
+    import logging
+    logging.getLogger("fraudshield.api").info(
+        "model_artifacts_loaded", extra={"threshold": calibrated_t,
+        "probability_calibrated": bool(bundle.get("probability_calibrated", bundle.get("calibrator") is not None)),
+        "calibration_method": bundle.get("calibration_method")}
+    )
 
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    global _startup_error
+    import logging
     try:
         load_artifacts()
-    except RuntimeError as e:
-        print(f"[API WARNING] Startup artifact load failed: {e}")
+        _startup_error = None
+    except (RuntimeError, OSError, ValueError) as exc:
+        _startup_error = str(exc)
+        logging.getLogger("fraudshield.api").exception(
+            "model_artifact_load_failed", extra={"model_dir": MODELS_DIR}
+        )
 
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
@@ -228,8 +250,7 @@ def get_fraud_proba(X_scaled: np.ndarray) -> float:
     else:
         raw = booster.predict(dmat)
 
-    score = float(np.clip(raw[0], -40.0, 40.0))
-    return float(1.0 / (1.0 + np.exp(-score)))
+    return model_output_to_score(raw[0], output_type=_model.get("output_type", "raw_margin"), calibrator=_model.get("calibrator"))
 
 
 def get_top_risk_factors(X_scaled: np.ndarray, top_k: int = 5) -> List[Dict[str, Any]]:
@@ -262,7 +283,18 @@ def health():
         "scaler_loaded": _scaler is not None,
         "explainer_loaded": _explainer is not None,
         "calibrated_threshold": _decision_engine.threshold if _decision_engine else None,
+        "probability_calibrated": bool(_model and _model.get("probability_calibrated", _model.get("calibrator") is not None)),
+        "calibration_method": _model.get("calibration_method") if _model else None,
+        "startup_error": _startup_error,
     }
+
+
+@app.get("/health/ready", tags=["System"])
+def readiness():
+    """Readiness probe for deployment platforms; 503 until inference artifacts load."""
+    if _model is None or _scaler is None or _explainer is None or _decision_engine is None:
+        raise HTTPException(status_code=503, detail=_startup_error or "Model artifacts are not loaded.")
+    return {"status": "ready"}
 
 
 @app.get("/model-info", tags=["System"])
@@ -275,6 +307,9 @@ def model_info():
         )
     return {
         "model_name": "FraudShield Asymmetric Cost-Sensitive XGBoost",
+        "probability_calibrated": bool(_model.get("probability_calibrated", _model.get("calibrator") is not None)),
+        "score_semantics": "calibrated_probability" if _model.get("probability_calibrated", _model.get("calibrator") is not None) else "uncalibrated_model_risk_score",
+        "calibration_method": _model.get("calibration_method"),
         "version": "1.1.0",
         "dataset": "Kaggle Credit Card Fraud Detection (MLG-ULB, 284,807 transactions)",
         "decision_thresholds": {
@@ -311,10 +346,16 @@ def predict(tx: TransactionRequest):
 
     return {
         "fraud_probability": round(decision.fraud_probability, 6),
+        "probability_calibrated": probability_calibrated,
+        "score_semantics": "calibrated_probability" if probability_calibrated else "uncalibrated_model_risk_score",
+        "calibration_method": _model.get("calibration_method") if _model else None,
         "is_fraud": decision.is_fraud,
         "decision": decision.decision,
         "risk_tier": decision.risk_tier,
         "threshold_used": decision.threshold_used,
+        "probability_calibrated": bool(_model.get("probability_calibrated", _model.get("calibrator") is not None)),
+        "score_semantics": "calibrated_probability" if _model.get("probability_calibrated", _model.get("calibrator") is not None) else "uncalibrated_model_risk_score",
+        "calibration_method": _model.get("calibration_method"),
         "model_version": "asymmetric-v1.1",
     }
 
@@ -343,7 +384,8 @@ def risk_score(tx: TransactionRequest):
     top_factors = get_top_risk_factors(X, top_k=5)
     global_ref = _explainer.get_global_feature_importance(importance_type="gain", top_k=5)
 
-    expected_exposure = round(proba * tx.Amount, 2)
+    probability_calibrated = bool(_model and _model.get("probability_calibrated", _model.get("calibrator") is not None))
+    expected_exposure = round(proba * tx.Amount, 2) if probability_calibrated else None
 
     return {
         "fraud_probability": round(decision.fraud_probability, 6),

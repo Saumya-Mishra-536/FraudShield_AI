@@ -16,8 +16,9 @@ import sys
 from datetime import datetime, timezone
 
 import numpy as np
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
-    average_precision_score, confusion_matrix, f1_score,
+    average_precision_score, brier_score_loss, confusion_matrix, f1_score,
     precision_score, recall_score, roc_auc_score,
 )
 
@@ -43,11 +44,35 @@ def evaluate(model, X_test, y_test, c_fp: float, c_fn: float) -> dict:
         "f1": float(f1_score(y_test, predictions, zero_division=0)),
         "roc_auc": float(roc_auc_score(y_test, probabilities)),
         "average_precision_pr_auc": float(average_precision_score(y_test, probabilities)),
+        "brier_score": float(brier_score_loss(y_test, probabilities)),
+        "probability_calibrated": bool(getattr(model, "calibrator", None) is not None),
+        "calibration_method": getattr(model, "calibration_method", None),
         "true_positives": int(tp), "false_positives": int(fp),
         "false_negatives": int(fn), "true_negatives": int(tn),
         "total_asymmetric_cost": float(total_cost),
         "cost_per_transaction": float(total_cost / len(y_test)),
     }
+
+
+
+def plot_calibration_curve(y_true, probabilities, output_path: str) -> None:
+    """Save a held-out reliability diagram and its Brier score."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    observed, predicted = calibration_curve(y_true, probabilities, n_bins=10, strategy="quantile")
+    brier = brier_score_loss(y_true, probabilities)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.plot([0, 1], [0, 1], "--", color="gray", label="Perfect calibration")
+    ax.plot(predicted, observed, "o-", color="#2563eb", label=f"Asymmetric model (Brier={brier:.4f})")
+    ax.set(xlabel="Mean predicted probability", ylabel="Observed fraud frequency",
+           title="Held-out calibration curve")
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
 
 
 def main() -> None:
@@ -125,6 +150,7 @@ def main() -> None:
         "symmetric_model": evaluate(symmetric, X_test, y_test, args.c_fp, args.c_fn),
         "asymmetric_model": evaluate(asymmetric, X_test, y_test, args.c_fp, args.c_fn),
     }
+    plot_calibration_curve(y_test, asym_proba, os.path.join(output_dir, "plots", "calibration_curve.png"))
     metrics_path = os.path.join(output_dir, "model_comparison.json")
     with open(metrics_path, "w", encoding="utf-8") as file:
         json.dump(results, file, indent=2)
