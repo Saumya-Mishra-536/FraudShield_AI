@@ -107,3 +107,4 @@ def test_decision_and_fraud_consistency_across_grid(engine):
             assert res.decision in ["ALLOW", "CHALLENGE"]
             assert res.risk_tier in ["LOW", "MEDIUM"]
             assert p < engine.threshold
+

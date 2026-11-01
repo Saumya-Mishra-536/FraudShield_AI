@@ -2,57 +2,72 @@
 Fraud Detection REST API — Kaggle CC Fraud Dataset Schema
 ==========================================================
 FastAPI service exposing:
-  - POST /predict      → Binary fraud decision + probability
-  - POST /risk-score   → Detailed risk classification + explanation
+  - POST /predict      → Unified fraud decision, tier, and probability
+  - POST /risk-score   → Detailed risk classification + pure SHAP explanation
+  - POST /explain      → Direct instance-level SHAP decomposition
+  - GET  /features/global-importance → Global XGBoost gain rankings
   - GET  /health       → Service health check
-  - GET  /model-info   → Model metadata and cost config
+  - GET  /model-info   → Model metadata, decision thresholds, and cost configuration
 
-Input schema matches the Kaggle Credit Card Fraud dataset:
-  V1–V28: PCA-transformed behavioral features (floats)
-  Amount: Transaction amount in EUR (raw, will be log-transformed)
-  Time:   Seconds since dataset start (will be cyclic-encoded)
+Features:
+  - Unified decision logic: `/predict` and `/risk-score` never contradict.
+  - 100% SHAP-driven explanations: heuristic rules and currency assumptions removed.
+  - Robust Pydantic v2 validation with finite float checks and boundary guards.
+  - Configurable model path via MODEL_DIR environment variable.
 """
+from __future__ import annotations
 
+import math
 import os
 import sys
-import numpy as np
-import joblib
+import tempfile
 import warnings
+from typing import Any, Dict, List, Optional
+
+# Ensure silent Matplotlib config directory
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matplotlib"))
 warnings.filterwarnings("ignore")
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+import joblib
+import numpy as np
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Query, status
+from pydantic import BaseModel, Field, field_validator, model_validator
 import uvicorn
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Path setup
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
-from src.preprocessing import engineer_features, FEATURE_COLS
-from src.loss_functions import DEFAULT_C_FP, DEFAULT_C_FN
-from src.explain import TransactionExplainer
-import pandas as pd
+from src.decision_engine import DecisionEngine, RiskDecision
+from src.explain import TransactionExplainer, generate_shap_narrative
+from src.loss_functions import DEFAULT_C_FN, DEFAULT_C_FP
+from src.preprocessing import FEATURE_COLS, engineer_features
 
-# --- Paths ---
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-MODELS_DIR = os.path.join(BASE_DIR, "models")
+# Environment-configurable paths
+MODELS_DIR = os.getenv("MODEL_DIR", os.path.join(BASE_DIR, "models"))
 ASYM_MODEL_PATH = os.path.join(MODELS_DIR, "asymmetric_model.pkl")
 SCALER_PATH = os.path.join(MODELS_DIR, "scaler.pkl")
 
-# --- Global state ---
-_model = None
-_scaler = None
-_feature_names = None
-_explainer = None
+# Global runtime state
+_model: Optional[Dict[str, Any]] = None
+_scaler: Any = None
+_feature_names: Optional[List[str]] = None
+_explainer: Optional[TransactionExplainer] = None
+_decision_engine: Optional[DecisionEngine] = None
 
 
-# ─── Pydantic Request/Response Models ─────────────────────────────────────────
+# ─── Pydantic Request & Response Schemas ─────────────────────────────────────
 
 class TransactionRequest(BaseModel):
     """
-    Transaction features matching Kaggle Credit Card Fraud dataset schema.
-    V1–V28 are PCA-transformed (already anonymized by the data provider).
-    Amount and Time are the only raw features. The dataset does not specify a currency.
+    Kaggle Credit Card Fraud transaction payload.
+    Features:
+      V1-V28: PCA anonymized components (dimensionless, zero-centered).
+      Amount: Transaction amount in dataset units (non-negative).
+      Time: Elapsed seconds since dataset epoch (non-negative).
     """
-    # PCA-transformed behavioral features
     V1: float;  V2: float;  V3: float;  V4: float;  V5: float
     V6: float;  V7: float;  V8: float;  V9: float;  V10: float
     V11: float; V12: float; V13: float; V14: float; V15: float
@@ -60,43 +75,66 @@ class TransactionRequest(BaseModel):
     V21: float; V22: float; V23: float; V24: float; V25: float
     V26: float; V27: float; V28: float
 
-    # Raw features (will be engineered in API)
-    Amount: float = Field(..., ge=0.0, description="Transaction amount in the dataset units; currency is unspecified")
-    Time: float = Field(..., ge=0.0,
-                        description="Seconds elapsed since first transaction in dataset")
+    Amount: float = Field(
+        ...,
+        ge=0.0,
+        le=10_000_000.0,
+        description="Transaction amount in dataset units (currency is unspecified).",
+    )
+    Time: float = Field(
+        ...,
+        ge=0.0,
+        le=100_000_000.0,
+        description="Seconds elapsed since dataset start.",
+    )
 
-    model_config = {"json_schema_extra": {"example": {
-        "V1": -1.3598, "V2": -0.0728, "V3": 2.5363, "V4": 1.3782,
-        "V5": -0.3383, "V6": 0.4624, "V7": 0.2396, "V8": 0.0987,
-        "V9": 0.3638, "V10": 0.0908, "V11": -0.5516, "V12": -0.6178,
-        "V13": -0.9914, "V14": -0.3112, "V15": 1.4682, "V16": -0.4704,
-        "V17": 0.2080, "V18": 0.0258, "V19": 0.4040, "V20": 0.2514,
-        "V21": -0.0183, "V22": 0.2778, "V23": -0.1105, "V24": 0.0669,
-        "V25": 0.1285, "V26": -0.1891, "V27": 0.1336, "V28": -0.0211,
-        "Amount": 149.62, "Time": 406.0
-    }}}
+    @model_validator(mode="after")
+    def validate_finite_numbers(self) -> TransactionRequest:
+        """Reject non-finite inputs (NaN, Infinity, -Infinity)."""
+        for field_name in [f"V{i}" for i in range(1, 29)] + ["Amount", "Time"]:
+            val = getattr(self, field_name)
+            if val is None or not math.isfinite(val):
+                raise ValueError(f"Field '{field_name}' must be a finite real number, got {val}")
+        return self
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "V1": -1.3598, "V2": -0.0728, "V3": 2.5363, "V4": 1.3782,
+                "V5": -0.3383, "V6": 0.4624, "V7": 0.2396, "V8": 0.0987,
+                "V9": 0.3638, "V10": 0.0908, "V11": -0.5516, "V12": -0.6178,
+                "V13": -0.9914, "V14": -0.3112, "V15": 1.4682, "V16": -0.4704,
+                "V17": 0.2080, "V18": 0.0258, "V19": 0.4040, "V20": 0.2514,
+                "V21": -0.0183, "V22": 0.2778, "V23": -0.1105, "V24": 0.0669,
+                "V25": 0.1285, "V26": -0.1891, "V27": 0.1336, "V28": -0.0211,
+                "Amount": 149.62,
+                "Time": 406.0,
+            }
+        }
+    }
 
 
 class PredictResponse(BaseModel):
-    fraud_probability: float
-    is_fraud: bool
-    decision: str
-    threshold_used: float
-    model_version: str
+    fraud_probability: float = Field(..., description="Estimated posterior fraud probability [0.0, 1.0].")
+    is_fraud: bool = Field(..., description="True if fraud_probability >= threshold_used.")
+    decision: str = Field(..., description="Action: ALLOW, CHALLENGE, BLOCK, or HARD_BLOCK.")
+    risk_tier: str = Field(..., description="Risk tier: LOW, MEDIUM, HIGH, or CRITICAL.")
+    threshold_used: float = Field(..., description="Primary calibrated decision threshold.")
+    model_version: str = Field(..., description="Active model deployment version.")
 
 
 class RiskScoreResponse(BaseModel):
     fraud_probability: float
     is_fraud: bool
     risk_tier: str
-    risk_score: float
+    risk_score: float = Field(..., description="Fraud probability scaled to 0-100.")
     decision: str
-    explanation: list[str]
-    top_risk_factors: list[dict]
-    local_shap_drivers: list[dict] = []
-    global_importance_reference: list[dict] = []
-    expected_exposure_amount_units: float
-    recommendation: str
+    explanation: List[str] = Field(default_factory=list, description="SHAP-derived narrative explanation.")
+    top_risk_factors: List[Dict[str, Any]] = Field(default_factory=list, description="Top features by global gain.")
+    local_shap_drivers: List[Dict[str, Any]] = Field(default_factory=list, description="Instance-specific local SHAP attributions.")
+    global_importance_reference: List[Dict[str, Any]] = Field(default_factory=list, description="Dataset-level global split importance reference.")
+    expected_exposure_amount_units: float = Field(..., description="Probability-weighted amount exposure proxy (P * Amount).")
+    recommendation: str = Field(..., description="Operational action recommendation.")
     model_version: str
 
 
@@ -104,71 +142,85 @@ class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
     scaler_loaded: bool
+    explainer_loaded: bool
+    calibrated_threshold: Optional[float] = None
 
 
-# ─── App ──────────────────────────────────────────────────────────────────────
+# ─── Application Setup ────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="Asymmetric Fraud Detection API",
+    title="FraudShield AI — Cost-Sensitive Fraud Detection API",
     description=(
-        "Production-grade fraud detection on the Kaggle Credit Card Fraud dataset. "
-        "Uses asymmetric cost-sensitive XGBoost with Prospect Theory-inspired loss. "
-        "FN penalty is 4× higher than FP (C_FN=$20, C_FP=$5)."
+        "Production-ready inference and explainability microservice for credit card fraud detection. "
+        "Employs an asymmetric XGBoost model with Kahneman-Tversky loss weighting and SHAP TreeExplainer attributions."
     ),
-    version="1.0.0",
+    version="1.1.0",
 )
 
 
-def load_artifacts():
-    global _model, _scaler, _feature_names, _explainer
+def load_artifacts() -> None:
+    """Load model, scaler, decision engine, and explainer from disk."""
+    global _model, _scaler, _feature_names, _explainer, _decision_engine
+
     if not os.path.exists(ASYM_MODEL_PATH):
         raise RuntimeError(
-            f"Model not found at {ASYM_MODEL_PATH}. Run: python -m src.train"
+            f"Model artifact not found at '{ASYM_MODEL_PATH}'. Run: python -m src.train"
         )
     if not os.path.exists(SCALER_PATH):
         raise RuntimeError(
-            f"Scaler not found at {SCALER_PATH}. Run: python -m src.train"
+            f"Scaler artifact not found at '{SCALER_PATH}'. Run: python -m src.train"
         )
+
     bundle = joblib.load(ASYM_MODEL_PATH)
     _model = bundle
     _scaler = joblib.load(SCALER_PATH)
     _feature_names = bundle.get("feature_names", FEATURE_COLS)
+
+    # Initialize unified decision engine with the calibrated threshold
+    calibrated_t = float(bundle.get("threshold", 0.160))
+    _decision_engine = DecisionEngine(fraud_threshold=calibrated_t)
+
+    # Initialize SHAP TreeExplainer on booster
     _explainer = TransactionExplainer(_model["model"], _feature_names)
-    print(f"[API] Asymmetric model and SHAP explainer loaded (threshold={bundle['threshold']:.4f})")
+    print(f"[API] Artifacts successfully loaded (Calibrated Threshold: {calibrated_t:.4f})")
 
 
 @app.on_event("startup")
-async def startup_event():
+async def startup_event() -> None:
     try:
         load_artifacts()
     except RuntimeError as e:
-        print(f"[API WARNING] {e}")
+        print(f"[API WARNING] Startup artifact load failed: {e}")
 
 
 # ─── Utilities ────────────────────────────────────────────────────────────────
 
 def transaction_to_array(tx: TransactionRequest) -> np.ndarray:
-    """
-    Convert request → engineered features → scaled array.
-    Applies the same transformations as training preprocessing.
-    """
+    """Convert request payload to engineered and scaled feature matrix."""
     if _scaler is None:
-        raise HTTPException(status_code=503, detail="Model not loaded. Run training first.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model scaler is not initialized. Ensure models are trained and present in models/.",
+        )
 
-    # Build raw row matching dataset schema
     row = {f"V{i}": getattr(tx, f"V{i}") for i in range(1, 29)}
-    row["Amount"] = tx.Amount
-    row["Time"] = tx.Time
+    row["Amount"] = float(tx.Amount)
+    row["Time"] = float(tx.Time)
 
     df = pd.DataFrame([row])
-    df = engineer_features(df)  # Amount_log, Time_sin, Time_cos; drops Amount & Time
-
+    df = engineer_features(df)
     X = df[FEATURE_COLS].values
     return _scaler.transform(X)
 
 
 def get_fraud_proba(X_scaled: np.ndarray) -> float:
-    """Run inference with the same best boosting iteration used by validation."""
+    """Predict fraud probability using the model's best boosting iteration."""
+    if _model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model is not loaded. Train model via: python -m src.train",
+        )
+
     import xgboost as xgb
     dmat = xgb.DMatrix(X_scaled, feature_names=_feature_names)
     booster = _model["model"]
@@ -177,62 +229,13 @@ def get_fraud_proba(X_scaled: np.ndarray) -> float:
         raw = booster.predict(dmat, iteration_range=(0, best_iteration + 1))
     else:
         raw = booster.predict(dmat)
+
     score = float(np.clip(raw[0], -40.0, 40.0))
     return float(1.0 / (1.0 + np.exp(-score)))
 
 
-def classify_risk(proba: float) -> tuple[str, str]:
-    """
-    Map fraud probability to operational risk tier.
-
-    Heuristic demo tiers only; they are not validated operational thresholds.
-      LOW      (< 0.05): Allow — very low risk
-      MEDIUM   (0.05–0.30): Challenge with step-up auth
-      HIGH     (0.30–0.70): Block and notify cardholder
-      CRITICAL (> 0.70):  Hard block, alert fraud team
-    """
-    if proba < 0.05:
-        return "LOW", "ALLOW"
-    elif proba < 0.30:
-        return "MEDIUM", "CHALLENGE"
-    elif proba < 0.70:
-        return "HIGH", "BLOCK"
-    else:
-        return "CRITICAL", "HARD_BLOCK"
-
-
-def generate_explanation(tx: TransactionRequest, proba: float) -> list[str]:
-    """Human-readable explanation based on transaction features."""
-    reasons = []
-
-    # Time-of-day from raw Time field
-    hour = (tx.Time % 86400) / 3600
-    if hour < 4 or hour > 22:
-        reasons.append(f"🕐 Late-night transaction (hour ≈ {hour:.0f}:00)")
-
-    if tx.Amount > 1000:
-        reasons.append(f"💰 High transaction amount (€{tx.Amount:,.2f})")
-    elif tx.Amount < 1:
-        reasons.append(f"⚠️ Unusually small amount (€{tx.Amount:.2f}) — possible card test")
-
-    # Key fraud-discriminative PCA features (well-established in literature)
-    if tx.V14 < -5:
-        reasons.append("🔍 Strong behavioral anomaly (V14 — highly fraud-discriminative)")
-    if tx.V4 > 5:
-        reasons.append("🔍 Unusual pattern in V4 (correlated with fraud in this dataset)")
-    if tx.V12 < -5:
-        reasons.append("🔍 Anomalous behavioral signal in V12")
-    if tx.V10 < -5:
-        reasons.append("🔍 Anomalous behavioral signal in V10")
-
-    if not reasons:
-        reasons.append("⚠️ Combined PCA feature pattern elevated risk above threshold")
-
-    return reasons
-
-
-def get_top_risk_factors(X_scaled: np.ndarray) -> list[dict]:
-    """Return top 5 features by XGBoost gain importance."""
+def get_top_risk_factors(X_scaled: np.ndarray, top_k: int = 5) -> List[Dict[str, Any]]:
+    """Return top global features by XGBoost gain importance."""
     if _model is None:
         return []
     scores = _model["model"].get_score(importance_type="gain")
@@ -246,131 +249,154 @@ def get_top_risk_factors(X_scaled: np.ndarray) -> list[dict]:
         for i, f in enumerate(feature_names)
     ]
     factors.sort(key=lambda x: x["importance_gain"], reverse=True)
-    return factors[:5]
+    return factors[:top_k]
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 def health():
+    """Service health and artifact availability check."""
+    loaded = _model is not None and _scaler is not None and _explainer is not None
     return {
-        "status": "healthy" if _model else "degraded",
+        "status": "healthy" if loaded else "degraded",
         "model_loaded": _model is not None,
         "scaler_loaded": _scaler is not None,
+        "explainer_loaded": _explainer is not None,
+        "calibrated_threshold": _decision_engine.threshold if _decision_engine else None,
     }
 
 
 @app.get("/model-info", tags=["System"])
 def model_info():
-    if _model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+    """Model operational metadata, cost assumptions, and decision boundaries."""
+    if _model is None or _decision_engine is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model artifacts are not loaded.",
+        )
     return {
-        "model_type": "Asymmetric XGBoost",
-        "dataset": "Kaggle Credit Card Fraud (MLG-ULB) — 284,807 transactions",
-        "version": "1.0.0",
-        "decision_threshold": _model["threshold"],
-        "cost_config": {"C_FP_assumption_units": DEFAULT_C_FP, "C_FN_assumption_units": DEFAULT_C_FN, "note": "Illustrative units, not validated monetary costs"},
-        "asymmetry_ratio": f"{DEFAULT_C_FN / DEFAULT_C_FP:.1f}x",
+        "model_name": "FraudShield Asymmetric Cost-Sensitive XGBoost",
+        "version": "1.1.0",
+        "dataset": "Kaggle Credit Card Fraud Detection (MLG-ULB, 284,807 transactions)",
+        "decision_thresholds": {
+            "fraud_decision_threshold": _decision_engine.threshold,
+            "challenge_threshold": _decision_engine.threshold_challenge,
+            "hard_block_threshold": _decision_engine.threshold_hard_block,
+            "theoretical_bayes_threshold": round(
+                DEFAULT_C_FP / (DEFAULT_C_FP + DEFAULT_C_FN), 4
+            ),
+        },
+        "cost_assumptions": {
+            "cost_false_positive": DEFAULT_C_FP,
+            "cost_false_negative": DEFAULT_C_FN,
+            "asymmetry_ratio": round(DEFAULT_C_FN / DEFAULT_C_FP, 2),
+            "note": "Illustrative units representing customer friction vs direct financial loss.",
+        },
         "feature_count": len(_feature_names or FEATURE_COLS),
-        "features": "V1–V28 (PCA) + Amount_log + Time_sin + Time_cos",
-        "theoretical_optimal_threshold": round(
-            DEFAULT_C_FP / (DEFAULT_C_FP + DEFAULT_C_FN), 4
-        ),
+        "features": _feature_names or FEATURE_COLS,
     }
 
 
 @app.post("/predict", response_model=PredictResponse, tags=["Prediction"])
 def predict(tx: TransactionRequest):
-    """Binary fraud prediction with probability."""
-    if _model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded. Run training first.")
+    """
+    Unified fraud prediction endpoint.
+    Guarantees strict alignment: decision and is_fraud are determined by the unified DecisionEngine.
+    """
+    if _decision_engine is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Decision engine not initialized.")
+
     X = transaction_to_array(tx)
     proba = get_fraud_proba(X)
-    threshold = _model["threshold"]
+    decision = _decision_engine.evaluate(proba)
+
     return {
-        "fraud_probability": round(proba, 6),
-        "is_fraud": proba >= threshold,
-        "decision": "BLOCK" if proba >= threshold else "ALLOW",
-        "threshold_used": round(threshold, 4),
-        "model_version": "asymmetric-kaggle-v1.0",
+        "fraud_probability": round(decision.fraud_probability, 6),
+        "is_fraud": decision.is_fraud,
+        "decision": decision.decision,
+        "risk_tier": decision.risk_tier,
+        "threshold_used": decision.threshold_used,
+        "model_version": "asymmetric-v1.1",
     }
 
 
 @app.post("/risk-score", response_model=RiskScoreResponse, tags=["Prediction"])
 def risk_score(tx: TransactionRequest):
-    """Detailed risk assessment with tier, explanation, local SHAP attribution, and global importance."""
-    if _model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded. Run training first.")
+    """
+    Detailed operational risk assessment with SHAP instance-level attribution.
+    Contains no heuristic rules or currency assumptions.
+    """
+    if _decision_engine is None or _explainer is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Model/Explainer not initialized.")
 
     X = transaction_to_array(tx)
     proba = get_fraud_proba(X)
-    threshold = _model["threshold"]
-    risk_tier, decision = classify_risk(proba)
-    explanation = generate_explanation(tx, proba)
-    top_factors = get_top_risk_factors(X)
-    
-    # Compute local SHAP attribution for this specific transaction
-    local_drivers = []
-    global_reference = []
-    if _explainer is not None:
-        raw_dict = {f"V{i}": getattr(tx, f"V{i}") for i in range(1, 29)}
-        raw_dict["Amount"] = tx.Amount
-        raw_dict["Time"] = tx.Time
-        shap_res = _explainer.explain_instance(X, raw_feature_dict=raw_dict, top_k=5)
-        local_drivers = shap_res["top_drivers_by_magnitude"]
-        global_ref = _explainer.get_global_feature_importance(importance_type="gain", top_k=5)
-        global_reference = global_ref["top_features"]
+    decision = _decision_engine.evaluate(proba)
 
-    # This is a probability-weighted amount exposure proxy, not a validated loss estimate.
-    expected_exposure_amount_units = round(proba * tx.Amount, 2)
+    # Local SHAP attribution
+    raw_dict = {f"V{i}": getattr(tx, f"V{i}") for i in range(1, 29)}
+    raw_dict["Amount"] = tx.Amount
+    raw_dict["Time"] = tx.Time
+    shap_res = _explainer.explain_instance(X, raw_feature_dict=raw_dict, top_k=5)
 
-    recommendation_map = {
-        "ALLOW":      "Process transaction normally.",
-        "CHALLENGE":  "Proceed with step-up authentication (OTP / biometric).",
-        "BLOCK":      "Block transaction. Notify cardholder for verification.",
-        "HARD_BLOCK": "Block immediately. Alert fraud team. Consider card suspension.",
-    }
+    # Generate SHAP-based narrative
+    explanation = generate_shap_narrative(shap_res, decision.decision, top_k=3)
+    top_factors = get_top_risk_factors(X, top_k=5)
+    global_ref = _explainer.get_global_feature_importance(importance_type="gain", top_k=5)
+
+    expected_exposure = round(proba * tx.Amount, 2)
 
     return {
-        "fraud_probability": round(proba, 6),
-        "is_fraud": proba >= threshold,
-        "risk_tier": risk_tier,
-        "risk_score": round(proba * 100, 1),
-        "decision": decision,
+        "fraud_probability": round(decision.fraud_probability, 6),
+        "is_fraud": decision.is_fraud,
+        "risk_tier": decision.risk_tier,
+        "risk_score": round(decision.fraud_probability * 100.0, 1),
+        "decision": decision.decision,
         "explanation": explanation,
         "top_risk_factors": top_factors,
-        "local_shap_drivers": local_drivers,
-        "global_importance_reference": global_reference,
-        "expected_exposure_amount_units": expected_exposure_amount_units,
-        "recommendation": recommendation_map[decision],
-        "model_version": "asymmetric-kaggle-v1.0",
+        "local_shap_drivers": shap_res["top_drivers_by_magnitude"],
+        "global_importance_reference": global_ref["top_features"],
+        "expected_exposure_amount_units": expected_exposure,
+        "recommendation": decision.recommendation,
+        "model_version": "asymmetric-v1.1",
     }
 
 
 @app.post("/explain", tags=["Explainability"])
-def explain_transaction(tx: TransactionRequest):
+def explain_transaction(
+    tx: TransactionRequest,
+    top_k: int = Query(default=10, ge=1, le=31, description="Number of top driving features to highlight."),
+):
     """
-    Detailed local explainability endpoint using SHAP TreeExplainer.
-    Returns additive SHAP values breaking down exact contributions to log-odds.
+    Detailed instance-level local SHAP explanation.
+    Decomposes log-odds: logit(p) = base_value + sum(shap_values).
     """
-    if _model is None or _explainer is None:
-        raise HTTPException(status_code=503, detail="Model/Explainer not loaded. Run training first.")
+    if _explainer is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="SHAP Explainer not initialized.")
 
     X = transaction_to_array(tx)
     raw_dict = {f"V{i}": getattr(tx, f"V{i}") for i in range(1, 29)}
     raw_dict["Amount"] = tx.Amount
     raw_dict["Time"] = tx.Time
-    return _explainer.explain_instance(X, raw_feature_dict=raw_dict, top_k=10)
+    return _explainer.explain_instance(X, raw_feature_dict=raw_dict, top_k=top_k)
 
 
 @app.get("/features/global-importance", tags=["Explainability"])
-def global_feature_importance(importance_type: str = "gain", top_k: int = 15):
+def global_feature_importance(
+    importance_type: str = Query(
+        default="gain",
+        pattern="^(gain|weight|cover|total_gain|total_cover)$",
+        description="XGBoost split evaluation metric.",
+    ),
+    top_k: int = Query(default=15, ge=1, le=31, description="Number of top features to return."),
+):
     """
-    Returns dataset-wide global feature importance derived from tree splits.
+    Model-wide global feature importance across all boosted trees.
     Distinguished from local instance-level SHAP attributions.
     """
     if _explainer is None:
-        raise HTTPException(status_code=503, detail="Explainer not loaded.")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Explainer not initialized.")
     return _explainer.get_global_feature_importance(importance_type=importance_type, top_k=top_k)
 
 

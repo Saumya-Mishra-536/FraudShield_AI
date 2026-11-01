@@ -92,8 +92,19 @@ def main() -> None:
     asymmetric = AsymmetricModel(c_fp=args.c_fp, c_fn=args.c_fn)
     asymmetric.fit(X_train, y_train, X_val, y_val, feature_names, class_counts)
 
+    # Save model artifacts
     symmetric.save(os.path.join(model_dir, "symmetric_model.pkl"))
     asymmetric.save(os.path.join(model_dir, "asymmetric_model.pkl"))
+
+    # Persist test predictions for lightweight, dynamic dashboard simulation
+    sym_proba = symmetric.predict_proba(X_test).astype(np.float32)
+    asym_proba = asymmetric.predict_proba(X_test).astype(np.float32)
+    np.savez_compressed(
+        os.path.join(output_dir, "test_predictions.npz"),
+        y_test=y_test.astype(np.int8),
+        sym_proba=sym_proba,
+        asym_proba=asym_proba,
+    )
 
     # Test split is never used for threshold tuning.
     results = {

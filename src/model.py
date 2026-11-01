@@ -109,7 +109,7 @@ class AsymmetricModel(BaseFraudModel):
         dval = xgb.DMatrix(X_val, label=y_val, feature_names=self.feature_names)
         params = {
             "max_depth": 6, "eta": 0.05, "subsample": 0.8,
-            "colsample_bytree": 0.8, "seed": 42, "nthread": -1,
+            "colsample_bytree": 0.8, "seed": 42, "n_jobs": -1,
             "disable_default_eval_metric": True,
         }
         objective = xgboost_asymmetric_objective(self.c_fp, self.c_fn)

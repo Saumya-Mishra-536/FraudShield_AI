@@ -3,11 +3,16 @@ API Integration & Explainability Endpoint Tests
 ================================================
 Tests FastAPI routes with TestClient, verifying:
 1. Health and model info endpoints.
-2. Predict endpoint logic.
+2. Predict endpoint logic with unified decision engine.
 3. Risk score endpoint containing both local SHAP explanations and global importance reference.
 4. Dedicated /explain endpoint returning additive local SHAP values.
 5. Global importance endpoint distinguishing tree-split gains from transaction-level SHAP.
+6. Validation errors for missing, negative, and non-finite inputs (422 responses).
+7. Validation errors for invalid query parameters (top_k, importance_type).
+8. Decision consistency: /predict and /risk-score always agree.
+9. Absence of hardcoded currency symbols in explanations.
 """
+import math
 import os
 import sys
 
@@ -42,7 +47,7 @@ def ensure_test_artifacts():
     booster = xgb.train(params, dtrain, num_boost_round=5)
     bundle = {
         "model": booster,
-        "threshold": 0.20,
+        "threshold": 0.160,
         "feature_names": FEATURE_COLS,
     }
     joblib.dump(bundle, ASYM_MODEL_PATH)
@@ -75,16 +80,20 @@ def test_health_endpoint(client):
     assert data["status"] == "healthy"
     assert data["model_loaded"] is True
     assert data["scaler_loaded"] is True
+    assert data["explainer_loaded"] is True
+    assert data["calibrated_threshold"] is not None
 
 
 def test_model_info_endpoint(client):
     res = client.get("/model-info")
     assert res.status_code == 200
     data = res.json()
-    assert data["model_type"] == "Asymmetric XGBoost"
-    assert "cost_config" in data
-    assert data["cost_config"]["C_FP_assumption_units"] == 5.0
-    assert data["cost_config"]["C_FN_assumption_units"] == 20.0
+    assert "FraudShield" in data["model_name"]
+    assert "cost_assumptions" in data
+    assert data["cost_assumptions"]["cost_false_positive"] == 5.0
+    assert data["cost_assumptions"]["cost_false_negative"] == 20.0
+    assert "decision_thresholds" in data
+    assert "fraud_decision_threshold" in data["decision_thresholds"]
 
 
 def test_predict_endpoint(client):
@@ -94,8 +103,26 @@ def test_predict_endpoint(client):
     data = res.json()
     assert "fraud_probability" in data
     assert "is_fraud" in data
-    assert data["decision"] in ["ALLOW", "BLOCK"]
+    assert data["decision"] in ["ALLOW", "CHALLENGE", "BLOCK", "HARD_BLOCK"]
+    assert data["risk_tier"] in ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
     assert 0.0 <= data["fraud_probability"] <= 1.0
+
+
+def test_predict_and_risk_score_never_contradict(client):
+    """Verify predict and risk-score produce identical probability, is_fraud, and decision."""
+    for test_args in [
+        {"V14": 0.5, "Amount": 20.0},                  # Likely low risk
+        {"V14": -3.5, "Amount": 150.0},                # Likely borderline
+        {"V14": -8.0, "V4": 6.0, "Amount": 2500.0},    # High fraud risk
+    ]:
+        payload = sample_transaction_payload(**test_args)
+        res_pred = client.post("/predict", json=payload).json()
+        res_risk = client.post("/risk-score", json=payload).json()
+
+        assert res_pred["fraud_probability"] == pytest.approx(res_risk["fraud_probability"], rel=1e-5)
+        assert res_pred["is_fraud"] == res_risk["is_fraud"]
+        assert res_pred["decision"] == res_risk["decision"]
+        assert res_pred["risk_tier"] == res_risk["risk_tier"]
 
 
 def test_risk_score_distinguishes_local_and_global_explanations(client):
@@ -106,7 +133,7 @@ def test_risk_score_distinguishes_local_and_global_explanations(client):
     assert "risk_tier" in data
     assert "local_shap_drivers" in data
     assert len(data["local_shap_drivers"]) > 0
-    # Verify local SHAP drivers have shap_value and effect
+
     top_local = data["local_shap_drivers"][0]
     assert "shap_value" in top_local
     assert "effect" in top_local
@@ -116,10 +143,15 @@ def test_risk_score_distinguishes_local_and_global_explanations(client):
     top_global = data["global_importance_reference"][0]
     assert "importance_score" in top_global
 
+    # Ensure no hardcoded currency symbols
+    explanation_text = " ".join(data["explanation"])
+    assert "€" not in explanation_text
+    assert "$" not in explanation_text
+
 
 def test_explain_endpoint_local_attribution(client):
     payload = sample_transaction_payload()
-    res = client.post("/explain", json=payload)
+    res = client.post("/explain?top_k=7", json=payload)
     assert res.status_code == 200
     data = res.json()
     assert data["explanation_type"] == "local_shap_attribution"
@@ -127,11 +159,43 @@ def test_explain_endpoint_local_attribution(client):
     assert "top_risk_increasing_factors" in data
     assert "top_risk_decreasing_factors" in data
     assert "top_drivers_by_magnitude" in data
+    assert len(data["top_drivers_by_magnitude"]) <= 7
 
 
 def test_global_importance_endpoint(client):
-    res = client.get("/features/global-importance?top_k=10")
+    res = client.get("/features/global-importance?top_k=10&importance_type=gain")
     assert res.status_code == 200
     data = res.json()
     assert "global_gain_importance" in data["explanation_type"]
     assert len(data["top_features"]) == 10
+
+
+def test_validation_rejects_negative_amount(client):
+    payload = sample_transaction_payload(Amount=-15.0)
+    res = client.post("/predict", json=payload)
+    assert res.status_code == 422
+
+
+def test_validation_rejects_negative_time(client):
+    payload = sample_transaction_payload(Time=-100.0)
+    res = client.post("/predict", json=payload)
+    assert res.status_code == 422
+
+
+def test_validation_rejects_missing_field(client):
+    payload = sample_transaction_payload()
+    del payload["V14"]
+    res = client.post("/predict", json=payload)
+    assert res.status_code == 422
+
+
+def test_validation_rejects_invalid_importance_type(client):
+    res = client.get("/features/global-importance?importance_type=invalid_metric")
+    assert res.status_code == 422
+
+
+def test_validation_rejects_out_of_range_top_k(client):
+    res = client.get("/features/global-importance?top_k=999")
+    assert res.status_code == 422
+    res2 = client.get("/features/global-importance?top_k=0")
+    assert res2.status_code == 422
