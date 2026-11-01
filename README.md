@@ -1,4 +1,4 @@
-# 🛡️ FraudShield AI — Cost-Sensitive Machine Learning & Explainable Fraud Architecture
+#  FraudShield AI — Cost-Sensitive Machine Learning & Explainable Fraud Architecture
 
 [![tests](https://github.com/Saumya-Mishra-536/FraudShield_AI/actions/workflows/tests.yml/badge.svg)](https://github.com/Saumya-Mishra-536/FraudShield_AI/actions)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
