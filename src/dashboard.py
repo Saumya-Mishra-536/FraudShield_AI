@@ -50,6 +50,10 @@ st.markdown("""
     .reportview-container { background: #f8fafc; }
     .main-header { font-size: 2.1rem; font-weight: 700; color: #0f172a; margin-bottom: 0.2rem; }
     .sub-header { font-size: 1.0rem; color: #475569; margin-bottom: 1.2rem; }
+    @media (prefers-color-scheme: dark) {
+        .main-header { color: #f8fafc; }
+        .sub-header { color: #cbd5e1; }
+    }
     .disclaimer-box {
         background-color: #fef2f2;
         border-left: 4px solid #ef4444;
@@ -126,7 +130,7 @@ st.markdown("""
     <strong>⚠️ Research & Portfolio Demonstration:</strong>
     This interactive dashboard demonstrates cost-sensitive machine learning, threshold optimization,
     and instance-level explainability on the Kaggle MLG-ULB credit card dataset (284,807 transactions).
-    Reported monetary values are based on illustrative cost assumptions ($C_{FP}=\\$5, C_{FN}=\\$20$),
+    Reported monetary values use illustrative cost assumptions (USD 5 per false positive and USD 20 per false negative),
     not validated banking loss parameters. It is an educational prototype, not an active financial fraud prevention system.
 </div>
 """, unsafe_allow_html=True)
