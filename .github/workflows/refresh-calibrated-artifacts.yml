@@ -1,6 +1,10 @@
 name: Refresh calibrated artifacts
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/refresh-calibrated-artifacts.yml
   workflow_dispatch:
 
 permissions:
