@@ -115,7 +115,8 @@ class TransactionRequest(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    fraud_probability: float = Field(..., description="Model score in [0, 1]; treat as posterior only when probability_calibrated is true.")
+    fraud_probability: float = Field(..., description="Compatibility field; consult probability_calibrated before treating as posterior.")
+    model_risk_score: float = Field(..., description="The model score used by decision thresholds.")
     is_fraud: bool = Field(..., description="True if fraud_probability >= threshold_used.")
     decision: str = Field(..., description="Action: ALLOW, CHALLENGE, BLOCK, or HARD_BLOCK.")
     risk_tier: str = Field(..., description="Risk tier: LOW, MEDIUM, HIGH, or CRITICAL.")
@@ -127,7 +128,8 @@ class PredictResponse(BaseModel):
 
 
 class RiskScoreResponse(BaseModel):
-    fraud_probability: float = Field(..., description="Model score in [0, 1]; consult probability_calibrated before treating it as a posterior.")
+    fraud_probability: float = Field(..., description="Compatibility field; consult probability_calibrated before treating as posterior.")
+    model_risk_score: float = Field(..., description="The model score used by decision thresholds.")
     probability_calibrated: bool
     score_semantics: str
     calibration_method: Optional[str] = None
