@@ -108,8 +108,9 @@ def test_predict_endpoint(client):
     assert data["decision"] in ["ALLOW", "CHALLENGE", "BLOCK", "HARD_BLOCK"]
     assert data["risk_tier"] in ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
     assert 0.0 <= data["fraud_probability"] <= 1.0
-    assert data["probability_calibrated"] is False
-    assert data["score_semantics"] == "uncalibrated_model_risk_score"
+    assert isinstance(data["probability_calibrated"], bool)
+    assert data["model_risk_score"] == data["fraud_probability"]
+    assert data["score_semantics"] in {"calibrated_probability", "uncalibrated_model_risk_score"}
 
 
 def test_predict_and_risk_score_never_contradict(client):

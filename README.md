@@ -13,8 +13,8 @@ Most fraud classifiers optimize symmetric metrics such as standard cross-entropy
 
 FraudShield AI implements:
 1. **Asymmetric Cost-Weighted Gradient Boosting**: A custom second-order XGBoost objective derived directly from weighted logistic loss, incorporating Kahneman & Tversky Prospect Theory loss aversion.
-2. **Strict Leakage-Free Preprocessing**: Stratified temporal/feature splitting, cyclic time encoding, and train-only SMOTE resampling.
-3. **Validation-Only Decision Threshold Tuning**: Decoupled threshold selection on validation data ensuring the final held-out test split is evaluated strictly once.
+2. **Stratified Random Preprocessing**: Train/validation/test splits, train-only scaling, cyclic time encoding, and optional train-only SMOTE.
+3. **Validation-Only Calibration and Threshold Selection**: Platt scaling is fitted on validation raw margins; the operating threshold is selected on calibrated validation scores; test data is reserved for evaluation.
 4. **Local SHAP Attribution**: Transaction-level explainability via `shap.TreeExplainer`, strictly distinguishing instance risk drivers from global feature importance.
 5. **Interactive Operations Dashboard & REST API**: Live scenario simulator, operational risk tiers, and complete FastAPI service.
 
@@ -51,7 +51,26 @@ flowchart TD
 
 ---
 
+### Score calibration and serving
+
+```mermaid
+flowchart LR
+    A[Training split] --> B[Fit scaler and model]
+    B --> C[Validation raw margins]
+    C --> D[Fit Platt calibrator]
+    D --> E[Select threshold on calibrated validation scores]
+    E --> F[Held-out test evaluation]
+    F --> G[Brier score and reliability curve]
+    D --> H[Saved model bundle]
+    H --> I[FastAPI]
+    H --> J[Streamlit local inference]
+    I --> K[Calibrated probability when calibrator exists]
+    I --> L[Uncalibrated risk score for legacy bundles]
+```
+
 ## 📊 Audited Test Results (Held-Out Test Set: 56,962 Transactions)
+
+These committed results were generated before the Platt calibrator was added. The manual artifact-refresh workflow will regenerate metrics under the pinned environment; use the resulting `outputs/model_comparison.json` and calibration curve as the current report.
 
 Evaluated strictly once on the untouched held-out test split after validation-based threshold selection ($C_{FP} = \$5.00, C_{FN} = \$20.00$):
 
@@ -78,7 +97,7 @@ Evaluated strictly once on the untouched held-out test split after validation-ba
 ## 📐 Mathematical Formulation
 
 ### 1. Weighted Asymmetric Logistic Loss
-Let $p_i$ denote the raw margin (logit) produced by the boosted trees, and let $\sigma(p_i) = \frac{1}{1 + e^{-p_i}}$ be the estimated fraud probability. Under false-negative cost $C_{FN}$ and false-positive cost $C_{FP}$:
+Let $p_i$ denote the raw margin (logit) produced by the boosted trees, and let $\sigma(p_i) = \frac{1}{1 + e^{-p_i}}$ be the model risk score before calibration. The weighted objective does not make this score a posterior probability. Under false-negative cost $C_{FN}$ and false-positive cost $C_{FP}$:
 
 $$\mathcal{L}(y_i, p_i) = - \left[ C_{FN} \cdot y_i \ln \sigma(p_i) + C_{FP} \cdot (1 - y_i) \ln (1 - \sigma(p_i)) \right]$$
 
@@ -186,13 +205,13 @@ Starts the production-ready FastAPI service:
 uvicorn src.api:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Interactive OpenAPI documentation available at: `http://127.0.0.1:8000/docs`
+Interactive OpenAPI documentation available at: `http://127.0.0.1:8000/docs`. See [documentation.md](documentation.md) for copyable sample requests and response semantics.
 
 #### API Endpoints
 - `GET /health`: Service health and artifact load status.
 - `GET /model-info`: Model metadata, cost parameters, and decision threshold.
-- `POST /predict`: Binary fraud decision (`ALLOW` / `BLOCK`) and probability.
-- `POST /risk-score`: Operational risk tier (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), action recommendation, probability-weighted exposure proxy, top risk factors, and local SHAP drivers.
+- `POST /predict`: Unified fraud decision, risk tier, score, and calibration status.
+- `POST /risk-score`: Operational risk tier, action recommendation, model score, top risk factors, and local SHAP drivers. Expected exposure is returned only when the saved score is calibrated.
 - `POST /explain`: In-depth SHAP local attribution for the transaction.
 - `GET /features/global-importance`: Global XGBoost gain rankings.
 
@@ -268,3 +287,8 @@ FraudShield_AI/
 3. **Cost Parameter Calibration**: Cost assumptions ($C_{FP} = \$5, C_{FN} = \$20$) vary by card product, interchange tier, and legal jurisdiction. Banks must calibrate these using empirical chargeback accounting and customer churn studies.
 4. **False Positive Harm**: False declines disproportionately impact legitimate customers traveling or making atypical purchases. Step-up authentication (`CHALLENGE`) is recommended over immediate hard blocks.
 5. **Adversarial Drift**: Fraudsters adapt behaviors when detection boundaries become apparent. Periodic retraining, concept drift monitoring, and shadow-mode evaluation are required before production promotion.
+6. **Random Split and Temporal Leakage**: The code uses stratified random splits, not a forward-in-time validation design. The source data covers roughly two days, so nearby transactions and repeated cardholder behavior can appear across splits. Reported results do not establish future-period performance.
+7. **Calibration Is Not Permanent**: Platt scaling is fitted on the validation split and evaluated on the held-out split using Brier score and a reliability curve. Calibration can drift as prevalence and transaction behavior change; production use would need rolling calibration checks. The small number of fraud cases in the test set makes calibration bins noisy.
+8. **Exposure Is Only a Proxy**: When calibrated probabilities are available, probability multiplied by transaction Amount is an exposure proxy. It is not expected chargeback loss because realized loss, recoveries, fees, and customer impact are not modeled.
+9. **No Demographic Fairness Audit**: PCA-anonymized fields do not provide enough information to test disparate impact across protected or vulnerable groups.
+

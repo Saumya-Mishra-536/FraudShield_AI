@@ -347,6 +347,7 @@ def predict(tx: TransactionRequest):
     probability_calibrated = bool(_model and _model.get("probability_calibrated", _model.get("calibrator") is not None))
     return {
         "fraud_probability": round(decision.fraud_probability, 6),
+        "model_risk_score": round(decision.fraud_probability, 6),
         "probability_calibrated": probability_calibrated,
         "score_semantics": "calibrated_probability" if probability_calibrated else "uncalibrated_model_risk_score",
         "calibration_method": _model.get("calibration_method") if _model else None,
@@ -387,6 +388,7 @@ def risk_score(tx: TransactionRequest):
 
     return {
         "fraud_probability": round(decision.fraud_probability, 6),
+        "model_risk_score": round(decision.fraud_probability, 6),
         "probability_calibrated": probability_calibrated,
         "score_semantics": "calibrated_probability" if probability_calibrated else "uncalibrated_model_risk_score",
         "calibration_method": _model.get("calibration_method") if _model else None,

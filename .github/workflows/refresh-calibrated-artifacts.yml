@@ -1,0 +1,44 @@
+name: Refresh calibrated artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Train models and fit validation calibrator
+        run: python -m src.train
+      - name: Verify model and evaluation outputs
+        run: |
+          test -f models/asymmetric_model.pkl
+          test -f models/scaler.pkl
+          test -f outputs/model_comparison.json
+          test -f outputs/test_predictions.npz
+          test -f outputs/plots/calibration_curve.png
+      - name: Run real-artifact integration tests
+        run: pytest tests/test_integration.py -v
+      - name: Run remaining test suite
+        run: pytest tests/ -v --ignore=tests/test_integration.py
+      - name: Commit refreshed artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add models/asymmetric_model.pkl models/symmetric_model.pkl models/scaler.pkl outputs/model_comparison.json outputs/test_predictions.npz outputs/plots/calibration_curve.png
+          if git diff --cached --quiet; then
+            echo "No regenerated artifacts changed."
+          else
+            git commit -m "Refresh calibrated model artifacts"
+            git push
+          fi
