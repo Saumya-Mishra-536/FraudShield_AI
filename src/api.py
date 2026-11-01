@@ -415,7 +415,8 @@ def explain_transaction(
 ):
     """
     Detailed instance-level local SHAP explanation.
-    Decomposes log-odds: logit(p) = base_value + sum(shap_values).
+    Decomposes the XGBoost raw margin before calibration: raw_margin = base_value + sum(shap_values).
+    The returned SHAP ``raw_model_score`` is its uncalibrated sigmoid score; use /predict for the decision score.
     """
     if _explainer is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="SHAP Explainer not initialized.")

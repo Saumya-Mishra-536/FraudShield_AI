@@ -135,10 +135,11 @@ def plot_confusion_matrices(sym_metrics: dict, asym_metrics: dict, save: bool = 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     fig.suptitle("Confusion Matrix: Symmetric vs Asymmetric", fontsize=14, fontweight="bold")
 
-    for ax, m, title in zip(axes,
-                             [sym_metrics, asym_metrics],
-                             ["Symmetric Model\n(threshold=0.50)",
-                              f"Asymmetric Model\n(threshold={asym_metrics['threshold']:.2f})"]):
+    titles = [
+        f"Symmetric Model\n(threshold={sym_metrics['threshold']:.3f})",
+        f"Asymmetric Model\n(threshold={asym_metrics['threshold']:.3f})",
+    ]
+    for ax, m, title in zip(axes, [sym_metrics, asym_metrics], titles):
         cm = np.array([[m["TN"], m["FP"]], [m["FN"], m["TP"]]])
         sns.heatmap(cm, annot=True, fmt=",d", cmap="Blues", ax=ax,
                     xticklabels=["Predicted: Legit", "Predicted: Fraud"],

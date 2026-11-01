@@ -172,8 +172,8 @@ if tab_choice == "📊 Model Comparison & Audit":
     ) if metrics else 0
     st.subheader(f"Audited Test Evaluation on Untouched Held-Out Split ({test_row_count:,} Transactions)")
     st.write(
-        "Both models were trained on 199,364 transactions (0.173% positive rate), tuned on a distinct validation split (28,481 rows), "
-        "and evaluated **strictly once** on the held-out test set."
+        "Both models were trained on 199,364 transactions (0.173% positive rate). Thresholds and calibration were selected "
+        "using a distinct validation split (28,481 rows); the metrics below report performance on the separate held-out test set."
     )
 
     if metrics:
@@ -546,7 +546,10 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
             # Local SHAP Feature Breakdown
             st.markdown("---")
             st.markdown("### 🔍 Exact Instance-Level SHAP Feature Contributions")
-            st.caption("Additive decomposition in log-odds: logit(p) = base_value + sum(shap_values).")
+            st.caption(
+                "SHAP values reconstruct the XGBoost raw margin before calibration: "
+                "raw margin = baseline value + sum(feature attributions). The decision uses the score shown above."
+            )
 
             sh_c1, sh_c2 = st.columns(2)
             with sh_c1:
@@ -579,10 +582,21 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
                 else:
                     st.write("No features significantly lowered the score.")
 
+            shap_shift = local_exp["total_log_odds"] - local_exp["base_value_log_odds"]
+            calibration_note = (
+                f"Platt-calibrated decision score: **{decision.fraud_probability:.4%}**. "
+                "The calibrated score above is used for the action."
+                if calibrated
+                else f"Uncalibrated decision score: **{decision.fraud_probability:.4%}**. "
+                "This score is a model risk score, not a posterior probability."
+            )
             st.info(
-                f"**Attribution Sanity Check:**  \n"
-                f"Base Prior Log-Odds: `{local_exp['base_value_log_odds']}` (Base Probability: `{local_exp['base_probability']:.4%}`)  \n"
-                f"Total Log-Odds Shift: `{local_exp['total_log_odds']}` $\\rightarrow$ Final Posterior Fraud Probability: `{local_exp['fraud_probability']:.4%}`."
+                f"**Raw-margin attribution check (pre-calibration):**  \n"
+                f"Baseline margin: `{local_exp['base_value_log_odds']:+.4f}`; "
+                f"sum of SHAP contributions: `{shap_shift:+.4f}`; "
+                f"reconstructed raw margin: `{local_exp['total_log_odds']:+.4f}`; "
+                f"raw sigmoid score: `{local_exp['raw_model_score']:.4%}`.  \n"
+                f"{calibration_note}"
             )
 
     # Recent Predictions Section

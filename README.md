@@ -39,7 +39,7 @@ flowchart TD
     F1 --> G1["Validation Tuning (Val Split)\nEmpirical Threshold Selection"]
     F2 --> G2["Validation Tuning (Val Split)\nEmpirical Threshold Selection"]
     
-    G1 --> H["Single Held-Out Evaluation (Test Split)\nPrecision, Recall, PR-AUC, ROC-AUC, Total Cost"]
+    G1 --> H["Held-Out Evaluation (Test Split)\nPrecision, Recall, PR-AUC, ROC-AUC, Total Cost"]
     G2 --> H
     
     H --> I["Outputs & Persisted Artifacts\nmodels/ · outputs/model_comparison.json · plots/"]
@@ -72,7 +72,7 @@ flowchart LR
 
 These results were regenerated with the pinned Python 3.12 environment. Platt scaling was fitted on validation raw margins; all metrics below are from the held-out test set. Cost totals use the illustrative $5/$20 assumptions.
 
-Evaluated strictly once on the untouched held-out test split after validation-based threshold selection ($C_{FP} = \$5.00, C_{FN} = \$20.00$):
+Reported on the untouched held-out test split after model, calibration, and threshold selection using validation data ($C_{FP} = \$5.00, C_{FN} = \$20.00$):
 
 | Metric | Symmetric XGBoost (Baseline) | Asymmetric XGBoost (Cost-Sensitive) | Operational Impact |
 | :--- | :---: | :---: | :--- |
@@ -131,14 +131,14 @@ FraudShield AI strictly separates **local transaction explanations** from **glob
 │   Local Attribution (SHAP)        │   Global Feature Importance        │
 ├───────────────────────────────────┼────────────────────────────────────┤
 │ • "Why was TX #38213 blocked?"    │ • "What does the model know overall?"│
-│ • Additive log-odds breakdown:    │ • Gain: Average improvement in split│
-│   logit(p) = base_val + Σ φ_i     │   objective across all trees       │
+│ • Raw-margin breakdown:           │ • Gain: Average improvement in split│
+│   margin = base_val + Σ φ_i       │   objective across all trees       │
 │ • Flags exact red flags vs        │ • Frequency: Number of tree splits │
 │   signals of legitimacy           │ • Dataset-level behavioral trends  │
 └───────────────────────────────────┴────────────────────────────────────┘
 ```
 
-- **Local Attributions** (`src/explain.py`): Uses `shap.TreeExplainer` on the booster. Every transaction prediction is decomposed into additive feature contributions ($\phi_i$), showing the base log-odds ($\approx -6.54$, base fraud rate $0.14\%$) plus individual feature contributions.
+- **Local Attributions** (`src/explain.py`): Uses `shap.TreeExplainer` on the booster. Each transaction's XGBoost raw margin is decomposed into additive feature contributions ($\phi_i$). Its sigmoid is an uncalibrated model score; the dashboard decision uses the separately Platt-calibrated score when a calibrator is present.
 - **Red Flags vs Mitigating Signals**: Features with $\phi_i > 0$ represent risk drivers (e.g., extreme negative anomaly in $V14$); features with $\phi_i < 0$ represent mitigating evidence (e.g., standard daytime timestamp).
 
 ---

@@ -3,8 +3,8 @@ Explainability Module — Local SHAP Attribution & Global Importance
 ===================================================================
 Provides exact local feature attributions using SHAP TreeExplainer on XGBoost,
 strictly distinguishing between:
-1. Local Explanation: Why did *this specific transaction* receive its risk score?
-   Attributed via additive SHAP values: logit(p) = base_value + sum(shap_values)
+1. Local Explanation: Why did *this specific transaction* receive its model score?
+   Attributed via additive SHAP values: raw_margin = base_value + sum(shap_values)
 2. Global Feature Importance: Which features matter most across the dataset overall?
    Computed via average gain or mean |SHAP| over background transactions.
 """
@@ -53,7 +53,7 @@ class TransactionExplainer:
 
         Returns:
             Dictionary containing local SHAP values, risk-increasing factors,
-            risk-decreasing factors, base probability, and final probability.
+            risk-decreasing factors, the raw model margin, and its uncalibrated sigmoid score.
         """
         if X_scaled.ndim == 1:
             X_scaled = X_scaled.reshape(1, -1)
@@ -94,9 +94,12 @@ class TransactionExplainer:
 
         return {
             "explanation_type": "local_shap_attribution",
+            "score_semantics": "uncalibrated_raw_margin_sigmoid",
             "base_value_log_odds": round(self.base_value, 4),
             "base_probability": round(self.base_probability, 6),
             "total_log_odds": round(total_margin, 4),
+            "raw_model_score": round(reconstructed_prob, 6),
+            # Compatibility alias: this is the raw sigmoid score, not a calibrated posterior.
             "fraud_probability": round(reconstructed_prob, 6),
             "top_risk_increasing_factors": risk_increasing[:top_k],
             "top_risk_decreasing_factors": risk_decreasing[:top_k],
