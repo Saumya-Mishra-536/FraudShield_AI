@@ -21,12 +21,10 @@ import math
 import os
 import sys
 import tempfile
-import warnings
 from typing import Any, Dict, List, Optional
 
 # Ensure silent Matplotlib config directory
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matplotlib"))
-warnings.filterwarnings("ignore")
 
 import joblib
 import numpy as np

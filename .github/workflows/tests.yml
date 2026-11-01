@@ -13,7 +13,15 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-      - name: Install dependencies
+      - name: Install pinned dependencies
         run: python -m pip install -r requirements.txt
-      - name: Run test suite
-        run: pytest tests/ -v
+      - name: Verify committed model and evaluation artifacts
+        run: |
+          test -f models/asymmetric_model.pkl
+          test -f models/scaler.pkl
+          test -f outputs/model_comparison.json
+          test -f outputs/test_predictions.npz
+      - name: Run real-artifact integration tests
+        run: pytest tests/test_integration.py -v
+      - name: Run remaining test suite
+        run: pytest tests/ -v --ignore=tests/test_integration.py

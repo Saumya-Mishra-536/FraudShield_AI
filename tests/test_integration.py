@@ -130,8 +130,12 @@ def test_dynamic_test_predictions_match_saved_model_comparison():
     metrics_path = os.path.join(ROOT, "outputs", "model_comparison.json")
     preds_path = os.path.join(ROOT, "outputs", "test_predictions.npz")
 
-    if not os.path.exists(metrics_path) or not os.path.exists(preds_path):
-        pytest.skip("Evaluation artifacts not present on disk.")
+    missing = [path for path in (metrics_path, preds_path) if not os.path.isfile(path)]
+    if missing:
+        pytest.fail(
+            "Required evaluation artifacts are missing: " + ", ".join(missing),
+            pytrace=False,
+        )
 
     with open(metrics_path, "r", encoding="utf-8") as f:
         metrics = json.load(f)

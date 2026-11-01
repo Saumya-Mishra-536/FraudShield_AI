@@ -108,3 +108,33 @@ def test_decision_and_fraud_consistency_across_grid(engine):
             assert res.risk_tier in ["LOW", "MEDIUM"]
             assert p < engine.threshold
 
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"challenge_ratio": 0.0},
+        {"challenge_ratio": 1.0},
+        {"challenge_ratio": float("nan")},
+        {"challenge_ratio": float("inf")},
+        {"hard_block_ratio": 0.0},
+        {"hard_block_ratio": 1.0},
+        {"hard_block_ratio": float("-inf")},
+        {"fraud_threshold": float("nan")},
+    ],
+)
+def test_constructor_rejects_invalid_threshold_parameters(kwargs):
+    with pytest.raises(ValueError):
+        DecisionEngine(**kwargs)
+
+
+@pytest.mark.parametrize("probability", [-0.01, 1.01, float("nan"), float("inf"), float("-inf")])
+def test_evaluate_rejects_invalid_probability(engine, probability):
+    with pytest.raises(ValueError, match="finite and in"):
+        engine.evaluate(probability)
+
+
+@pytest.mark.parametrize("probability", [0.0, 1.0])
+def test_evaluate_accepts_probability_boundaries(engine, probability):
+    result = engine.evaluate(probability)
+    assert result.fraud_probability == probability

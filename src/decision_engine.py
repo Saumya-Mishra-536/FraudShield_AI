@@ -14,7 +14,8 @@ Guarantees:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+import math
+from typing import Dict
 
 
 @dataclass(frozen=True)
@@ -65,19 +66,45 @@ class DecisionEngine:
             challenge_ratio: Ratio to establish tau_challenge = challenge_ratio * tau.
             hard_block_ratio: Ratio to establish tau_hard_block = tau + (1 - tau) * hard_block_ratio.
         """
+        parameters = {
+            "fraud_threshold": fraud_threshold,
+            "challenge_ratio": challenge_ratio,
+            "hard_block_ratio": hard_block_ratio,
+        }
+        validated = {}
+        for name, value in parameters.items():
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"{name} must be a finite number, got {value!r}") from exc
+            if not math.isfinite(number):
+                raise ValueError(f"{name} must be finite, got {value!r}")
+            validated[name] = number
+
+        fraud_threshold = validated["fraud_threshold"]
+        challenge_ratio = validated["challenge_ratio"]
+        hard_block_ratio = validated["hard_block_ratio"]
         if not 0.0 < fraud_threshold < 1.0:
             raise ValueError(f"fraud_threshold must be in (0, 1), got {fraud_threshold}")
+        if not 0.0 < challenge_ratio < 1.0:
+            raise ValueError(f"challenge_ratio must be in (0, 1), got {challenge_ratio}")
+        if not 0.0 < hard_block_ratio < 1.0:
+            raise ValueError(f"hard_block_ratio must be in (0, 1), got {hard_block_ratio}")
 
-        self.threshold = float(fraud_threshold)
-        self.threshold_challenge = round(float(self.threshold * challenge_ratio), 4)
+        self.threshold = fraud_threshold
+        self.threshold_challenge = round(self.threshold * challenge_ratio, 4)
         self.threshold_hard_block = round(
-            float(self.threshold + (1.0 - self.threshold) * hard_block_ratio), 4
+            self.threshold + (1.0 - self.threshold) * hard_block_ratio, 4
         )
 
-        # Sanity assertion
-        assert (
-            0.0 < self.threshold_challenge < self.threshold < self.threshold_hard_block < 1.0
-        ), "Threshold boundaries must be strictly increasing: 0 < tau_challenge < tau < tau_hard < 1"
+        if not (
+            0.0 < self.threshold_challenge < self.threshold
+            < self.threshold_hard_block < 1.0
+        ):
+            raise ValueError(
+                "Derived thresholds must be strictly increasing: "
+                "0 < tau_challenge < tau < tau_hard < 1"
+            )
 
     def evaluate(self, proba: float) -> RiskDecision:
         """
@@ -89,9 +116,12 @@ class DecisionEngine:
         - [tau, tau_hard_block)       -> HIGH      -> BLOCK        (is_fraud = True)
         - [tau_hard_block, 1.0]       -> CRITICAL  -> HARD_BLOCK   (is_fraud = True)
         """
-        p = float(proba)
-        # Ensure within [0, 1]
-        p = max(0.0, min(1.0, p))
+        try:
+            p = float(proba)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"proba must be a finite number in [0, 1], got {proba!r}") from exc
+        if not math.isfinite(p) or not 0.0 <= p <= 1.0:
+            raise ValueError(f"proba must be finite and in [0, 1], got {proba!r}")
 
         is_fraud = bool(p >= self.threshold)
 

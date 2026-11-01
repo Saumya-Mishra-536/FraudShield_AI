@@ -13,11 +13,9 @@ import json
 import os
 import sys
 import tempfile
-import warnings
 
 # Ensure silent Matplotlib config directory
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matplotlib"))
-warnings.filterwarnings("ignore")
 
 import joblib
 import matplotlib.pyplot as plt
