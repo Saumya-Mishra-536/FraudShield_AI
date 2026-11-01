@@ -31,28 +31,28 @@ response.raise_for_status()
 print(response.json())
 ```
 
-Example response for an older artifact without a saved calibrator:
+Example response shape from the refreshed artifact (values are illustrative):
 
 ```json
 {
-  "fraud_probability": 0.1234,
-  "model_risk_score": 0.1234,
-  "probability_calibrated": false,
-  "score_semantics": "uncalibrated_model_risk_score",
-  "calibration_method": null,
+  "fraud_probability": 0.03,
+  "model_risk_score": 0.03,
+  "probability_calibrated": true,
+  "score_semantics": "calibrated_probability",
+  "calibration_method": "Platt scaling fitted on validation raw margins",
   "is_fraud": false,
   "decision": "CHALLENGE",
   "risk_tier": "MEDIUM",
-  "threshold_used": 0.16,
+  "threshold_used": 0.0483,
   "model_version": "asymmetric-v1.1"
 }
 ```
 
-The `fraud_probability` field is retained for compatibility. Treat it as a posterior only when `probability_calibrated` is true. Otherwise, use `model_risk_score` as an uncalibrated score; it drives the configured action threshold but is not a claim about the real-world frequency of fraud among transactions with that score.
+The `fraud_probability` field is retained for compatibility. Treat it as a posterior only when `probability_calibrated` is true. The `model_risk_score` field always identifies the numerical score used by the configured action threshold.
 
 ## Detailed risk response
 
-Send the same JSON to `POST /risk-score`. It includes SHAP explanations and global feature references. `expected_exposure_amount_units` is null for uncalibrated artifacts. For artifacts saved with validation-fitted Platt scaling, it is calculated as calibrated probability times Amount; it remains an exposure proxy, not expected chargeback loss.
+Send the same JSON to `POST /risk-score`. It includes SHAP explanations and global feature references. `expected_exposure_amount_units` is calculated from calibrated probability times Amount for the refreshed artifacts; it remains an exposure proxy, not expected chargeback loss.
 
 ## Calibration and artifact refresh
 

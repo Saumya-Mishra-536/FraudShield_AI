@@ -70,27 +70,29 @@ flowchart LR
 
 ## 📊 Audited Test Results (Held-Out Test Set: 56,962 Transactions)
 
-These committed results were generated before the Platt calibrator was added. The manual artifact-refresh workflow will regenerate metrics under the pinned environment; use the resulting `outputs/model_comparison.json` and calibration curve as the current report.
+These results were regenerated with the pinned Python 3.12 environment. Platt scaling was fitted on validation raw margins; all metrics below are from the held-out test set. Cost totals use the illustrative $5/$20 assumptions.
 
 Evaluated strictly once on the untouched held-out test split after validation-based threshold selection ($C_{FP} = \$5.00, C_{FN} = \$20.00$):
 
 | Metric | Symmetric XGBoost (Baseline) | Asymmetric XGBoost (Cost-Sensitive) | Operational Impact |
 | :--- | :---: | :---: | :--- |
-| **Optimal Threshold ($\tau$)** | `0.210` | `0.160` | Shifts toward theoretical Bayes threshold ($\tau^* = 0.200$) |
-| **Precision** | `83.17%` | **`87.50%`** | **+4.33% higher decision precision** |
-| **Recall (Fraud Caught Rate)** | `85.71%` | `85.71%` | Identical high capture (84 / 98 frauds caught) |
-| **F1 Score** | `0.8442` | **`0.8660`** | **+0.0218 improvement** |
-| **ROC-AUC** | `0.9809` | **`0.9824`** | Robust class separation |
-| **PR-AUC (Avg Precision)** | `0.8814` | `0.8754` | High precision across all operating thresholds |
-| **True Positives ($TP$)** | `84` | `84` | Catches 84 fraudulent transactions |
-| **False Positives ($FP$)** | `17` | **`12`** | **29.4% reduction in false alerts (less customer friction)** |
-| **False Negatives ($FN$)** | `14` | `14` | Missed fraud bounded |
-| **Total Asymmetric Cost** | `$365.00` | **`$340.00`** | **6.85% total operational cost reduction** |
-| **Cost per Transaction** | `$0.00641` | **`$0.00597`** | Lower per-transaction overhead |
+| **Validation-selected Threshold ($\tau$)** | `0.5966` | `0.0483` | Selected separately on validation scores; asymmetric score is Platt-calibrated |
+| **Precision** | `72.92%` | **`79.25%`** | Higher precision at the selected cost operating point |
+| **Recall (Fraud Caught Rate)** | `71.43%` | **`85.71%`** | Asymmetric catches 84 / 98 frauds |
+| **F1 Score** | `0.7216` | **`0.8235`** | Higher held-out F1 |
+| **ROC-AUC** | `0.9603` | **`0.9763`** | Stronger ranking on this split |
+| **PR-AUC (Avg Precision)** | `0.6880` | **`0.8686`** | Higher precision-recall area |
+| **Brier Score** | `0.15559` | **`0.00041`** | Asymmetric score calibrated with Platt scaling |
+| **True Positives ($TP$)** | `70` | **`84`** | 14 additional frauds caught |
+| **False Positives ($FP$)** | `26` | **`22`** | 4 fewer false alerts |
+| **False Negatives ($FN$)** | `28` | **`14`** | 14 fewer missed frauds |
+| **Total Asymmetric Cost** | `$690.00` | **`$390.00`** | 43.5% lower cost under illustrative weights |
+| **Cost per Transaction** | `$0.01211` | **`$0.00685`** | Lower cost on this test split |
 
 ### Key Takeaways
-1. **False Alarm Reduction Without Missing Additional Fraud**: The Asymmetric model eliminated **5 unnecessary account/card blocks** (17 down to 12) while preserving the exact same fraud detection rate (84 caught).
-2. **Targeted Tree Splits**: Incorporating asymmetric cost directly into tree splits focuses the tree structure on regions where classification errors have high consequences, rather than merely shifting a post-hoc cutoff.
+1. **More Fraud Captured at Fewer False Alerts**: At validation-selected thresholds, the asymmetric model caught 84 fraud cases vs 70 and produced 22 false positives vs 26 on this held-out split.
+2. **Lower Illustrative Cost**: Under the project's assumed $5 false-positive and $20 false-negative costs, the test split cost was $390 vs $690. These are illustrative units, not measured bank losses.
+3. **Calibrated Scores**: The asymmetric raw margins were calibrated with Platt scaling fitted on validation data. Its Brier score and reliability curve describe the held-out test split; they do not guarantee calibration after deployment or drift.
 
 ---
 
@@ -114,7 +116,7 @@ XGBoost optimizes leaf weights using second-order Newton-Raphson boosting. We de
 ### 3. Bayes Optimal Decision Threshold
 Under asymmetric costs, the decision rule that minimizes expected loss is:
 $$\tau^* = \frac{C_{FP}}{C_{FP} + C_{FN}} = \frac{5}{5 + 20} = 0.200$$
-The empirical validation tuning selected $\tau = 0.160$, closely reflecting this theoretical threshold.
+The validation search selected $\tau = 0.0483$ after Platt calibration. This empirical threshold is specific to this model, split, and illustrative cost assumptions; the theoretical threshold is only a reference under calibrated posterior and cost assumptions.
 
 ---
 
@@ -234,6 +236,7 @@ FraudShield_AI/
 ├── outputs/                     # Persisted evaluation artifacts & figures
 │   ├── model_comparison.json   # Exact audited test set metrics
 │   └── plots/
+│       ├── calibration_curve.png       # Held-out reliability curve
 │       ├── confusion_matrix_comparison.png
 │       ├── prospect_theory_curve.png
 │       ├── roc_pr_curves.png
