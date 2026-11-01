@@ -162,7 +162,11 @@ with st.sidebar:
 # TAB 1: Model Comparison & Audit
 # ==============================================================================
 if tab_choice == "📊 Model Comparison & Audit":
-    st.subheader("Audited Test Evaluation on Untouched Held-Out Split (56,962 Transactions)")
+    test_row_count = sum(
+        int(metrics["asymmetric_model"][key])
+        for key in ("true_positives", "false_positives", "false_negatives", "true_negatives")
+    ) if metrics else 0
+    st.subheader(f"Audited Test Evaluation on Untouched Held-Out Split ({test_row_count:,} Transactions)")
     st.write(
         "Both models were trained on 199,364 transactions (0.173% positive rate), tuned on a distinct validation split (28,481 rows), "
         "and evaluated **strictly once** on the held-out test set."
@@ -179,9 +183,11 @@ if tab_choice == "📊 Model Comparison & Audit":
         with c1:
             st.metric("Total Asymmetric Cost", f"${a_m['total_asymmetric_cost']:,.0f}", f"-${cost_diff:,.0f} ({cost_pct:.1f}%)", delta_color="inverse")
         with c2:
-            st.metric("Test Precision", f"{a_m['precision']:.2%}", f"+{a_m['precision'] - s_m['precision']:.2%}")
+            precision_delta_pp = (a_m["precision"] - s_m["precision"]) * 100
+            st.metric("Test Precision", f"{a_m['precision']:.2%}", f"{precision_delta_pp:+.2f} pp")
         with c3:
-            st.metric("Test Recall", f"{a_m['recall']:.2%}", "Identical (85.71%)")
+            recall_delta_pp = (a_m["recall"] - s_m["recall"]) * 100
+            st.metric("Test Recall", f"{a_m['recall']:.2%}", f"{recall_delta_pp:+.2f} pp")
         with c4:
             st.metric("F1 Score", f"{a_m['f1']:.4f}", f"+{a_m['f1'] - s_m['f1']:.4f}")
 
@@ -198,6 +204,8 @@ if tab_choice == "📊 Model Comparison & Audit":
                     "F1 Score",
                     "ROC-AUC",
                     "PR-AUC (Average Precision)",
+                    "Brier Score",
+                    "Probability Calibration",
                     "True Positives (Caught Fraud)",
                     "False Positives (False Alarms)",
                     "False Negatives (Missed Fraud)",
@@ -212,6 +220,8 @@ if tab_choice == "📊 Model Comparison & Audit":
                     f"{s_m['f1']:.4f}",
                     f"{s_m['roc_auc']:.4f}",
                     f"{s_m['average_precision_pr_auc']:.4f}",
+                    f"{s_m['brier_score']:.6f}",
+                    "Calibrated" if s_m.get("probability_calibrated") else "Not calibrated",
                     f"{s_m['true_positives']}",
                     f"{s_m['false_positives']}",
                     f"{s_m['false_negatives']}",
@@ -226,6 +236,10 @@ if tab_choice == "📊 Model Comparison & Audit":
                     f"{a_m['f1']:.4f}",
                     f"{a_m['roc_auc']:.4f}",
                     f"{a_m['average_precision_pr_auc']:.4f}",
+                    f"{a_m['brier_score']:.6f}",
+                    "Platt scaling" if a_m.get("calibration_method") and "platt" in a_m["calibration_method"].lower() else (
+                        "Calibrated" if a_m.get("probability_calibrated") else "Not calibrated"
+                    ),
                     f"{a_m['true_positives']}",
                     f"{a_m['false_positives']}",
                     f"{a_m['false_negatives']}",
@@ -238,19 +252,21 @@ if tab_choice == "📊 Model Comparison & Audit":
 
         with col_right:
             st.markdown("### 🎯 Key Evaluation Takeaways")
+            symmetric_positives = s_m["true_positives"] + s_m["false_negatives"]
+            asymmetric_positives = a_m["true_positives"] + a_m["false_negatives"]
+            fp_reduction = s_m["false_positives"] - a_m["false_positives"]
+            fp_reduction_pct = (
+                fp_reduction / s_m["false_positives"] * 100
+                if s_m["false_positives"]
+                else 0.0
+            )
+            theoretical_bayes_threshold = DEFAULT_C_FP / (DEFAULT_C_FP + DEFAULT_C_FN)
             st.info(
-                """
-                1. **False Alarm Reduction Without Missing Fraud**:
-                   The Asymmetric model decreased False Positives from **17 down to 12** (a 29.4% reduction in blocked customers)
-                   while catching the exact same 84 out of 98 fraud cases (85.71% recall).
-                2. **Higher Precision & Decision Quality**:
-                   Because the custom loss shapes tree split gradients around high-consequence regions,
-                   Precision increased from **83.17% to 87.50%**.
-                3. **Operational Cost Savings**:
-                   The total financial loss dropped from **$365.00 to $340.00** on the test partition.
-                4. **Threshold Shift**:
-                   The validation-selected decision threshold shifted from **0.210 down to 0.160**, aligning closely
-                   with the theoretical Bayes threshold of $\\tau^* = 0.200$.
+                f"""
+                1. **False Alarms:** False positives changed from **{s_m['false_positives']:,}** to **{a_m['false_positives']:,}** ({fp_reduction_pct:.1f}% fewer under this test threshold).
+                2. **Fraud Detection:** The symmetric model caught **{s_m['true_positives']:,} of {symmetric_positives:,}** cases; the asymmetric model caught **{a_m['true_positives']:,} of {asymmetric_positives:,}**. Recall changed from **{s_m['recall']:.2%}** to **{a_m['recall']:.2%}**.
+                3. **Illustrative Cost:** Estimated cost under the stated assumptions changed from **USD {s_m['total_asymmetric_cost']:,.0f}** to **USD {a_m['total_asymmetric_cost']:,.0f}** on this held-out test set.
+                4. **Thresholds:** Validation-selected thresholds were **{s_m['threshold']:.3f}** (symmetric) and **{a_m['threshold']:.3f}** (asymmetric). The simple Bayes reference under the illustrative costs is **{theoretical_bayes_threshold:.3f}**; it is a reference point, not a substitute for validation.
                 """
             )
 
@@ -610,8 +626,15 @@ elif tab_choice == "📐 Mathematical & Behavioral Theory":
     $$\\tau^* = \\frac{C_{FP}}{C_{FP} + C_{FN}}$$
     With $C_{FP} = 5$ and $C_{FN} = 20$:
     $$\\tau^* = \\frac{5}{5 + 20} = 0.200$$
-    The empirical validation search selected $\\tau = 0.160$ for the asymmetric model, closely tracking this theoretical value.
+    This Bayes threshold is a reference for calibrated probabilities under the stated two-cost decision rule.
     """)
+
+    if metrics and "asymmetric_model" in metrics:
+        current_threshold = metrics["asymmetric_model"]["threshold"]
+        st.markdown(
+            f"The saved asymmetric model's validation-selected threshold is **{current_threshold:.3f}**. "
+            "It is selected empirically on the validation split and can differ from the simple theoretical reference above."
+        )
 
     st.markdown(r"""
     ### 4. Prospect Theory (Kahneman & Tversky, 1979)
