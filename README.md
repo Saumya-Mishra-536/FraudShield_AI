@@ -98,6 +98,24 @@ Reported on the untouched held-out test split after model, calibration, and thre
 
 ---
 
+
+### Forward-time holdout (same source dataset)
+
+To probe sensitivity to transaction order, a separate chronological split trains on the earliest 70% of `Time`, uses the next 10% for validation and calibration, and evaluates on the latest 20% (56,962 transactions, including 75 frauds). This is a later slice of the same roughly 48-hour Kaggle dataset, not an independent future period.
+
+| Latest-window metric | Asymmetric XGBoost |
+| :--- | :---: |
+| Validation-selected threshold | `0.2857` |
+| Precision | `82.81%` |
+| Recall | `70.67%` (53 / 75 frauds) |
+| F1 | `0.7626` |
+| PR-AUC | `0.7610` |
+| Brier score | `0.000522` |
+| Bootstrap 95% Brier interval | `[0.000359, 0.000698]` |
+| Illustrative cost | `495` units (`$5/$20` assumptions) |
+
+Amount and within-window time summaries are available in [the chronological calibration report](outputs/time_holdout/calibration_evaluation.json). These subgroup estimates are descriptive and based on relatively few fraud examples; they should not be read as performance guarantees. The full comparison is in [the chronological evaluation report](outputs/time_holdout/model_comparison.json), with its reliability plot at `outputs/time_holdout/plots/calibration_curve.png`.
+
 ## 📐 Mathematical Formulation
 
 ### 1. Weighted Asymmetric Logistic Loss
