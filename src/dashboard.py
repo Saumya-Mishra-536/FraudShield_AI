@@ -36,6 +36,7 @@ from src.dashboard_api import DashboardAPIError, request_risk_score
 from src.decision_engine import DecisionEngine
 from src.explain import TransactionExplainer, generate_shap_narrative
 from src.loss_functions import DEFAULT_C_FN, DEFAULT_C_FP, asymmetric_cost
+from src import theme
 from src.preprocessing import FEATURE_COLS, engineer_features
 
 # Page Configuration
@@ -43,41 +44,11 @@ st.set_page_config(
     page_title="FraudShield AI — Cost-Sensitive Fraud Architecture",
     page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
-# Custom Styling
-st.markdown("""
-<style>
-    .reportview-container { background: #f8fafc; }
-    .main-header { font-size: 2.1rem; font-weight: 700; color: #0f172a; margin-bottom: 0.2rem; }
-    .sub-header { font-size: 1.0rem; color: #475569; margin-bottom: 1.2rem; }
-    @media (prefers-color-scheme: dark) {
-        .main-header { color: #f8fafc; }
-        .sub-header { color: #cbd5e1; }
-    }
-    .disclaimer-box {
-        background-color: #fef2f2;
-        border-left: 4px solid #ef4444;
-        padding: 0.8rem 1.2rem;
-        border-radius: 4px;
-        margin-bottom: 1.2rem;
-        font-size: 0.88rem;
-        color: #991b1b;
-    }
-    .metric-card {
-        background: white;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 0.8rem 1.0rem;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    }
-    .badge-allow { background-color: #dcfce7; color: #166534; padding: 3px 8px; border-radius: 4px; font-weight: 600; }
-    .badge-challenge { background-color: #fef3c7; color: #92400e; padding: 3px 8px; border-radius: 4px; font-weight: 600; }
-    .badge-block { background-color: #fee2e2; color: #991b1b; padding: 3px 8px; border-radius: 4px; font-weight: 600; }
-    .badge-hard-block { background-color: #7f1d1d; color: #ffffff; padding: 3px 8px; border-radius: 4px; font-weight: 600; }
-</style>
-""", unsafe_allow_html=True)
+theme.inject()
+theme.mpl_dark()
 
 
 @st.cache_resource
@@ -122,47 +93,37 @@ sym_model, asym_model, scaler, metrics, explainer, decision_engine, test_preds =
 if "prediction_history" not in st.session_state:
     st.session_state["prediction_history"] = []
 
-# Header
-st.markdown('<div class="main-header">🛡️ FraudShield AI: Cost-Sensitive Fraud Architecture</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">Asymmetric Gradient Boosting with Kahneman-Tversky Loss Weighting & Local SHAP Explainability</div>', unsafe_allow_html=True)
+# Hero + top navigation
+theme.hero(metrics, decision_engine)
+theme.note(
+    "<b>Research and portfolio demonstration.</b> Built on the Kaggle MLG-ULB card dataset (284,807 transactions). "
+    "Costs of USD 5 per false alarm and USD 20 per missed fraud are illustrative, not real bank losses. "
+    "This is not a live fraud prevention system."
+)
 
-# Mandatory Disclaimer
-st.markdown("""
-<div class="disclaimer-box">
-    <strong>⚠️ Research & Portfolio Demonstration:</strong>
-    This interactive dashboard demonstrates cost-sensitive machine learning, threshold optimization,
-    and instance-level explainability on the Kaggle MLG-ULB credit card dataset (284,807 transactions).
-    Reported monetary values use illustrative cost assumptions (USD 5 per false positive and USD 20 per false negative),
-    not validated banking loss parameters. It is an educational prototype, not an active financial fraud prevention system.
-</div>
-""", unsafe_allow_html=True)
+NAV = {
+    "Model audit": "📊 Model Comparison & Audit",
+    "Cost simulator": "🎚️ Decision Threshold & Cost Simulator",
+    "Score a transaction": "🔍 Live Transaction Scoring & SHAP",
+    "Theory": "📐 Mathematical & Behavioral Theory",
+}
+with st.container(key="nav"):
+    nav_choice = st.radio("Module", list(NAV), horizontal=True, label_visibility="collapsed")
+tab_choice = NAV[nav_choice]
 
-# Sidebar
 with st.sidebar:
-    st.image("https://img.shields.io/badge/Status-Verified%20Pipeline-success?style=for-the-badge")
-    st.title("Navigation & Parameters")
-    tab_choice = st.radio(
-        "Select Module:",
-        [
-            "📊 Model Comparison & Audit",
-            "🎚️ Decision Threshold & Cost Simulator",
-            "🔍 Live Transaction Scoring & SHAP",
-            "📐 Mathematical & Behavioral Theory",
-        ],
-    )
-    st.divider()
-    st.markdown("### Default Cost Assumptions")
-    st.markdown("- **False Positive ($C_{FP}$)**: $5.00  \n  *(Customer friction, verification alert, card re-issue risk)*")
-    st.markdown("- **False Negative ($C_{FN}$)**: $20.00  \n  *(Chargeback fee, investigation cost, direct stolen balance loss)*")
-    st.markdown("- **Asymmetry Ratio ($\\lambda$)**: 4.0×  \n  *(Tversky-Kahneman loss aversion multiplier)*")
-    st.divider()
+    st.markdown("### Cost assumptions")
+    st.markdown("- **Missed fraud ($C_{FN}$):** $20.00  \n  Chargeback, investigation, stolen balance")
+    st.markdown("- **False alarm ($C_{FP}$):** $5.00  \n  Customer friction and verification")
+    st.markdown("- **Ratio ($\\lambda$):** 4.0x")
     if decision_engine:
-        st.markdown("### Calibrated Decision Engine")
-        st.markdown(f"- **Fraud Cutoff ($\\tau$)**: `{decision_engine.threshold:.3f}`")
-        st.markdown(f"- **Challenge Tier ($\\tau_{{c}}$)**: `{decision_engine.threshold_challenge:.3f}`")
-        st.markdown(f"- **Hard Block Tier ($\\tau_{{hb}}$)**: `{decision_engine.threshold_hard_block:.3f}`")
+        st.divider()
+        st.markdown("### Decision engine")
+        st.markdown(f"- **Fraud cutoff ($\\tau$):** `{decision_engine.threshold:.3f}`")
+        st.markdown(f"- **Challenge tier ($\\tau_{{c}}$):** `{decision_engine.threshold_challenge:.3f}`")
+        st.markdown(f"- **Hard block tier ($\\tau_{{hb}}$):** `{decision_engine.threshold_hard_block:.3f}`")
     st.divider()
-    st.caption("FraudShield AI · Built with XGBoost 2.x, SHAP, and Streamlit")
+    st.caption("FraudShield AI. XGBoost, SHAP and Streamlit.")
 
 # ==============================================================================
 # TAB 1: Model Comparison & Audit
@@ -172,7 +133,7 @@ if tab_choice == "📊 Model Comparison & Audit":
         int(metrics["asymmetric_model"][key])
         for key in ("true_positives", "false_positives", "false_negatives", "true_negatives")
     ) if metrics else 0
-    st.subheader(f"Audited Test Evaluation on Untouched Held-Out Split ({test_row_count:,} Transactions)")
+    theme.section("Held-out test evaluation", f"{test_row_count:,} transactions the model never saw during training or tuning")
     st.write(
         "Both models were trained on 199,364 transactions (0.173% positive rate). Thresholds and calibration were selected "
         "using a distinct validation split (28,481 rows); the metrics below report performance on the separate held-out test set."
@@ -201,7 +162,7 @@ if tab_choice == "📊 Model Comparison & Audit":
 
         col_left, col_right = st.columns(2)
         with col_left:
-            st.markdown("### 📋 Side-by-Side Held-Out Performance")
+            st.markdown("### Side-by-Side Held-Out Performance")
             comparison_df = pd.DataFrame({
                 "Metric": [
                     "Optimal Decision Threshold",
@@ -284,7 +245,7 @@ if tab_choice == "📊 Model Comparison & Audit":
                     st.caption(group_report.get("grouping_note", ""))
 
         with col_right:
-            st.markdown("### 🎯 Key Evaluation Takeaways")
+            st.markdown("### Key Evaluation Takeaways")
             symmetric_positives = s_m["true_positives"] + s_m["false_negatives"]
             asymmetric_positives = a_m["true_positives"] + a_m["false_negatives"]
             fp_reduction = s_m["false_positives"] - a_m["false_positives"]
@@ -336,7 +297,7 @@ if tab_choice == "📊 Model Comparison & Audit":
                 )
 
         st.markdown("---")
-        st.subheader("🖼️ Generated Evaluation Artifacts")
+        theme.section("Evaluation artifacts", "Generated plots from the latest training run")
         plot_tabs = st.tabs(["Confusion Matrices", "PR & ROC Curves", "Threshold Tuning Curves", "SHAP Feature Summary"])
 
         plots_dir = os.path.join(ROOT, "outputs", "plots")
@@ -370,7 +331,7 @@ if tab_choice == "📊 Model Comparison & Audit":
 # TAB 2: Decision Threshold & Cost Simulator (100% Dynamic on Real Test Set)
 # ==============================================================================
 elif tab_choice == "🎚️ Decision Threshold & Cost Simulator":
-    st.subheader("Interactive Decision Threshold & Economic Cost Simulator")
+    theme.section("Cost simulator", "Move the cutoff and the costs, and watch the trade-off on real test data")
     st.write(
         "Dynamically evaluate the trade-off between customer friction ($FP$) and financial losses ($FN$) "
         "calculated directly against the **56,962 held-out test transactions**."
@@ -463,7 +424,7 @@ elif tab_choice == "🎚️ Decision Threshold & Cost Simulator":
                 cm_data,
                 annot=True,
                 fmt=",d",
-                cmap="Blues",
+                cmap=theme.HEAT, annot_kws={"color": "#ffffff"},
                 cbar=False,
                 ax=ax_cm,
                 xticklabels=["Predicted Legit", "Predicted Fraud"],
@@ -486,7 +447,7 @@ elif tab_choice == "🎚️ Decision Threshold & Cost Simulator":
 # TAB 3: Live Transaction Scoring & SHAP
 # ==============================================================================
 elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
-    st.subheader("Live Inference & Local SHAP Attribution Engine")
+    theme.section("Score a transaction", "Get a decision and see exactly which features drove it")
     st.write(
         "Evaluate individual transaction profiles against the **unified decision engine** "
         "and inspect true instance-level SHAP attributions."
@@ -545,7 +506,7 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
     else:
         st.caption("Live scoring runs locally from saved artifacts. Set FRAUDSHIELD_API_URL to use FastAPI.")
 
-    if st.button("🚀 Evaluate Transaction Risk & Generate Explanation", type="primary"):
+    if st.button("Score this transaction", type="primary"):
         api_latency_ms = None
         if api_base_url:
             transaction_payload = {
@@ -631,7 +592,7 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
         })
 
         st.markdown("---")
-        st.markdown("### 🎯 Decision Summary")
+        st.markdown("### Decision Summary")
 
         badge_class = {
             "ALLOW": "badge-allow",
@@ -659,12 +620,12 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
         st.caption(f"Scoring source: {scoring_source} · model: {model_version}{latency_note}")
 
         st.markdown("---")
-        st.markdown("### 🧠 SHAP Attribution Narrative")
+        st.markdown("### SHAP Attribution Narrative")
         for item in narrative:
             st.markdown(f"- {item}")
 
         st.markdown("---")
-        st.markdown("### 🔍 Exact Instance-Level SHAP Feature Contributions")
+        st.markdown("### Exact Instance-Level SHAP Feature Contributions")
         st.caption(
             "SHAP values reconstruct the XGBoost raw margin before calibration: "
             "raw margin = baseline value + sum(feature attributions). The decision uses the score shown above."
@@ -672,7 +633,7 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
 
         sh_c1, sh_c2 = st.columns(2)
         with sh_c1:
-            st.markdown("#### 🚨 Top Risk-Increasing Drivers (Pushed Toward Fraud)")
+            st.markdown("#### Top Risk-Increasing Drivers (Pushed Toward Fraud)")
             if local_exp["top_risk_increasing_factors"]:
                 up_df = pd.DataFrame([
                     {
@@ -687,7 +648,7 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
                 st.write("No features elevated the score above baseline.")
 
         with sh_c2:
-            st.markdown("#### 🛡️ Top Risk-Mitigating Drivers (Pushed Toward Legitimacy)")
+            st.markdown("#### Top Risk-Mitigating Drivers (Pushed Toward Legitimacy)")
             if local_exp["top_risk_decreasing_factors"]:
                 down_df = pd.DataFrame([
                     {
@@ -721,7 +682,7 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
     # Recent Predictions Section
     if st.session_state["prediction_history"]:
         st.markdown("---")
-        st.markdown("### 🕒 Recent Transaction History (This Session)")
+        st.markdown("### Recent Transaction History (This Session)")
         history_df = pd.DataFrame(st.session_state["prediction_history"]).iloc[::-1]
         st.dataframe(history_df, hide_index=True)
 
@@ -730,7 +691,7 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
 # TAB 4: Mathematical & Behavioral Theory
 # ==============================================================================
 elif tab_choice == "📐 Mathematical & Behavioral Theory":
-    st.subheader("Mathematical Formulations & Behavioral Economics")
+    theme.section("Theory", "The loss function, the threshold rule and the behavioral-economics framing")
 
     st.markdown("""
     ### 1. Weighted Asymmetric Logistic Loss
