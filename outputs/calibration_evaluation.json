@@ -1,0 +1,53 @@
+{
+  "brier_score_bootstrap": {
+    "method": "Nonparametric row bootstrap; percentile interval",
+    "confidence_level": 0.95,
+    "replicates": 500,
+    "estimate": 0.00040897344566164016,
+    "lower_95": 0.00025613331658969844,
+    "upper_95": 0.0005768473574346491,
+    "note": "Sampling uncertainty on this held-out random split; not a future-period guarantee."
+  },
+  "held_out_groups": {
+    "grouping_note": "Descriptive slices from the same held-out random split. Time halves are not an out-of-time test.",
+    "amount_tertiles": {
+      "low": {
+        "transactions": 19582,
+        "fraud_transactions": 49,
+        "mean_predicted_probability": 0.002597850405602192,
+        "observed_fraud_rate": 0.002502298028801961,
+        "brier_score": 0.0007409477161745599
+      },
+      "middle": {
+        "transactions": 18399,
+        "fraud_transactions": 11,
+        "mean_predicted_probability": 0.0008538226163011429,
+        "observed_fraud_rate": 0.0005978585792706125,
+        "brier_score": 9.744014736263876e-05
+      },
+      "high": {
+        "transactions": 18981,
+        "fraud_transactions": 38,
+        "mean_predicted_probability": 0.0021422304641074657,
+        "observed_fraud_rate": 0.002002002002002002,
+        "brier_score": 0.0003684687825890587
+      }
+    },
+    "dataset_time_halves": {
+      "earlier": {
+        "transactions": 28481,
+        "fraud_transactions": 61,
+        "mean_predicted_probability": 0.002204220246622274,
+        "observed_fraud_rate": 0.0021417787296794354,
+        "brier_score": 0.0005293202119245968
+      },
+      "later": {
+        "transactions": 28481,
+        "fraud_transactions": 37,
+        "mean_predicted_probability": 0.001561176523120736,
+        "observed_fraud_rate": 0.0012991116884940837,
+        "brier_score": 0.0002886266793986836
+      }
+    }
+  }
+}
