@@ -1,12 +1,28 @@
 {
   "metadata": {
-    "created_at_utc": "2026-11-02T06:10:03.882196+00:00",
+    "created_at_utc": "2026-11-02T06:23:07.169453+00:00",
     "dataset": "Kaggle Credit Card Fraud Detection (MLG-ULB)",
     "rows_loaded": 284807,
     "fraud_rows_loaded": 492,
     "random_seed": 42,
     "test_size": 0.2,
     "validation_size": 0.1,
+    "split_strategy": "random",
+    "split_time_ranges": null,
+    "split_class_counts": {
+      "train": {
+        "0": 199019,
+        "1": 345
+      },
+      "validation": {
+        "0": 28432,
+        "1": 49
+      },
+      "test": {
+        "0": 56864,
+        "1": 98
+      }
+    },
     "smote_enabled": false,
     "false_positive_cost_assumption": 5.0,
     "false_negative_cost_assumption": 20.0,

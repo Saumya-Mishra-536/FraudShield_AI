@@ -1,0 +1,165 @@
+{
+  "metadata": {
+    "created_at_utc": "2026-11-02T06:23:20.929644+00:00",
+    "dataset": "Kaggle Credit Card Fraud Detection (MLG-ULB)",
+    "rows_loaded": 284807,
+    "fraud_rows_loaded": 492,
+    "random_seed": 42,
+    "test_size": 0.2,
+    "validation_size": 0.1,
+    "split_strategy": "temporal",
+    "split_time_ranges": {
+      "train": {
+        "start_seconds": 0.0,
+        "end_seconds": 132928.0
+      },
+      "validation": {
+        "start_seconds": 132929.0,
+        "end_seconds": 145247.0
+      },
+      "test": {
+        "start_seconds": 145248.0,
+        "end_seconds": 172792.0
+      }
+    },
+    "split_class_counts": {
+      "train": {
+        "0": 198980,
+        "1": 384
+      },
+      "validation": {
+        "0": 28448,
+        "1": 33
+      },
+      "test": {
+        "0": 56887,
+        "1": 75
+      }
+    },
+    "smote_enabled": false,
+    "false_positive_cost_assumption": 5.0,
+    "false_negative_cost_assumption": 20.0,
+    "cost_note": "Illustrative cost units, not validated banking loss estimates.",
+    "threshold_selection_method": "5-fold cross-fitted Platt scores on validation split",
+    "feature_names": [
+      "V1",
+      "V2",
+      "V3",
+      "V4",
+      "V5",
+      "V6",
+      "V7",
+      "V8",
+      "V9",
+      "V10",
+      "V11",
+      "V12",
+      "V13",
+      "V14",
+      "V15",
+      "V16",
+      "V17",
+      "V18",
+      "V19",
+      "V20",
+      "V21",
+      "V22",
+      "V23",
+      "V24",
+      "V25",
+      "V26",
+      "V27",
+      "V28",
+      "Amount_log",
+      "Time_sin",
+      "Time_cos"
+    ]
+  },
+  "symmetric_model": {
+    "threshold": 0.57994994994995,
+    "precision": 0.9038461538461539,
+    "recall": 0.6266666666666667,
+    "f1": 0.7401574803149606,
+    "roc_auc": 0.9692635107025038,
+    "average_precision_pr_auc": 0.6533517583617301,
+    "brier_score": 0.17571092379555792,
+    "probability_calibrated": false,
+    "calibration_method": null,
+    "true_positives": 47,
+    "false_positives": 5,
+    "false_negatives": 28,
+    "true_negatives": 56882,
+    "total_asymmetric_cost": 585.0,
+    "cost_per_transaction": 0.010270004564446473
+  },
+  "asymmetric_model": {
+    "threshold": 0.28565565565565565,
+    "precision": 0.828125,
+    "recall": 0.7066666666666667,
+    "f1": 0.762589928057554,
+    "roc_auc": 0.9736744774728848,
+    "average_precision_pr_auc": 0.7610130990975603,
+    "brier_score": 0.0005218075547128077,
+    "probability_calibrated": true,
+    "calibration_method": "Platt scaling fitted on full validation split",
+    "true_positives": 53,
+    "false_positives": 11,
+    "false_negatives": 22,
+    "true_negatives": 56876,
+    "total_asymmetric_cost": 495.0,
+    "cost_per_transaction": 0.008690003862223938
+  },
+  "calibration_evaluation": {
+    "brier_score_bootstrap": {
+      "method": "Nonparametric row bootstrap; percentile interval",
+      "confidence_level": 0.95,
+      "replicates": 500,
+      "estimate": 0.0005218075571120744,
+      "lower_95": 0.0003592270480044005,
+      "upper_95": 0.0006983951273303075,
+      "note": "Sampling uncertainty on this chronological holdout within the same 48-hour dataset; not an independent future-period guarantee."
+    },
+    "held_out_groups": {
+      "grouping_note": "Slices within the chronological held-out test window. These are descriptive groups from the same 48-hour source dataset.",
+      "amount_tertiles": {
+        "low": {
+          "transactions": 18995,
+          "fraud_transactions": 44,
+          "mean_predicted_probability": 0.0023888071962916858,
+          "observed_fraud_rate": 0.002316399052382206,
+          "brier_score": 0.0008932461747431481
+        },
+        "middle": {
+          "transactions": 19045,
+          "fraud_transactions": 9,
+          "mean_predicted_probability": 0.00040529630722716545,
+          "observed_fraud_rate": 0.0004725649776844316,
+          "brier_score": 0.0002856394261104478
+        },
+        "high": {
+          "transactions": 18922,
+          "fraud_transactions": 22,
+          "mean_predicted_probability": 0.0010923086861970065,
+          "observed_fraud_rate": 0.0011626677941021033,
+          "brier_score": 0.00038663926163716336
+        }
+      },
+      "test_window_time_halves": {
+        "earlier": {
+          "transactions": 28481,
+          "fraud_transactions": 53,
+          "mean_predicted_probability": 0.001599608612486186,
+          "observed_fraud_rate": 0.0018608897159509848,
+          "brier_score": 0.0005109268532353378
+        },
+        "later": {
+          "transactions": 28481,
+          "fraud_transactions": 22,
+          "mean_predicted_probability": 0.0009902908230997026,
+          "observed_fraud_rate": 0.000772444787753239,
+          "brier_score": 0.000532688260988811
+        }
+      }
+    }
+  }
+}

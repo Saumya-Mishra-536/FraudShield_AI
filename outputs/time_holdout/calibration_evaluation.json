@@ -1,0 +1,53 @@
+{
+  "brier_score_bootstrap": {
+    "method": "Nonparametric row bootstrap; percentile interval",
+    "confidence_level": 0.95,
+    "replicates": 500,
+    "estimate": 0.0005218075571120744,
+    "lower_95": 0.0003592270480044005,
+    "upper_95": 0.0006983951273303075,
+    "note": "Sampling uncertainty on this chronological holdout within the same 48-hour dataset; not an independent future-period guarantee."
+  },
+  "held_out_groups": {
+    "grouping_note": "Slices within the chronological held-out test window. These are descriptive groups from the same 48-hour source dataset.",
+    "amount_tertiles": {
+      "low": {
+        "transactions": 18995,
+        "fraud_transactions": 44,
+        "mean_predicted_probability": 0.0023888071962916858,
+        "observed_fraud_rate": 0.002316399052382206,
+        "brier_score": 0.0008932461747431481
+      },
+      "middle": {
+        "transactions": 19045,
+        "fraud_transactions": 9,
+        "mean_predicted_probability": 0.00040529630722716545,
+        "observed_fraud_rate": 0.0004725649776844316,
+        "brier_score": 0.0002856394261104478
+      },
+      "high": {
+        "transactions": 18922,
+        "fraud_transactions": 22,
+        "mean_predicted_probability": 0.0010923086861970065,
+        "observed_fraud_rate": 0.0011626677941021033,
+        "brier_score": 0.00038663926163716336
+      }
+    },
+    "test_window_time_halves": {
+      "earlier": {
+        "transactions": 28481,
+        "fraud_transactions": 53,
+        "mean_predicted_probability": 0.001599608612486186,
+        "observed_fraud_rate": 0.0018608897159509848,
+        "brier_score": 0.0005109268532353378
+      },
+      "later": {
+        "transactions": 28481,
+        "fraud_transactions": 22,
+        "mean_predicted_probability": 0.0009902908230997026,
+        "observed_fraud_rate": 0.000772444787753239,
+        "brier_score": 0.000532688260988811
+      }
+    }
+  }
+}
