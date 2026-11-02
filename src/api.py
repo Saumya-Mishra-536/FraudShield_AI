@@ -553,7 +553,7 @@ def risk_score(tx: TransactionRequest):
         "global_importance_reference": global_ref["top_features"],
         "expected_exposure_amount_units": expected_exposure,
         "recommendation": decision.recommendation,
-        "model_version": "asymmetric-v1.1",
+        "model_version": "asymmetric-v1.2",
     }
 
 

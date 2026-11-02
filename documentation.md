@@ -17,6 +17,19 @@ curl http://127.0.0.1:8000/health/ready
 
 `/health/ready` returns HTTP 503 when required model artifacts are unavailable. Health probes remain public. When `FRAUDSHIELD_API_KEY` is configured, other endpoints require `X-API-Key`; local development leaves authentication disabled if that variable is unset. Set `FRAUDSHIELD_ENV=production` to make a missing API key fail readiness and reject protected requests. The in-process limiter defaults to 60 requests per client per minute; multi-worker deployments need a shared gateway or limiter.
 
+## Route Streamlit live scoring through FastAPI
+
+The live-scoring tab uses local model artifacts when `FRAUDSHIELD_API_URL` is unset. To route each submitted transaction through the API, start FastAPI first, then launch Streamlit with the API base URL and the same API key configured on both services:
+
+```bash
+export FRAUDSHIELD_API_URL="http://127.0.0.1:8000"
+# Set this when API-key authentication is enabled:
+export FRAUDSHIELD_API_KEY="your-configured-api-key"
+streamlit run src/dashboard.py
+```
+
+The dashboard posts the entered `V1`–`V28`, `Amount`, and `Time` values to `/risk-score`. It displays the API's decision, model version, SHAP explanation, and client round-trip time. Connection, timeout, authentication, validation, readiness, and rate-limit failures appear as safe messages; the dashboard does not silently fall back to its local model while API mode is configured. Model comparison and historical simulation continue to use the saved local evaluation artifacts. Docker Compose sets `FRAUDSHIELD_API_URL=http://api:8000` for the dashboard service and shares the configured API key between services.
+
 ## Prediction request
 
 The request requires V1–V28 plus Amount and Time. This Python example supplies all 30 fields:
@@ -53,7 +66,7 @@ Example response shape from the refreshed artifact (values are illustrative):
   "decision": "CHALLENGE",
   "risk_tier": "MEDIUM",
   "threshold_used": 0.0492,
-  "model_version": "asymmetric-v1.1"
+  "model_version": "asymmetric-v1.2"
 }
 ```
 

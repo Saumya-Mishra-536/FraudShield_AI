@@ -222,3 +222,36 @@ def test_temporal_holdout_metrics_use_disjoint_later_windows():
     assert "chronological holdout" in interval["note"]
     assert "same 48-hour source dataset" in report["held_out_groups"]["grouping_note"]
     assert "test_window_time_halves" in report["held_out_groups"]
+
+def test_dashboard_live_scoring_client_calls_real_risk_score_endpoint(api_client, monkeypatch):
+    """The dashboard HTTP client sends its payload and key through the actual API route."""
+    import httpx
+
+    from src.dashboard_api import request_risk_score
+
+    monkeypatch.setenv("FRAUDSHIELD_API_KEY", "integration-test-key")
+    transaction = TRANSACTION_PROFILES[0]["payload"]
+
+    def forward_to_fastapi(request):
+        assert request.url.path == "/risk-score"
+        assert request.headers.get("X-API-Key") == "integration-test-key"
+        response = api_client.post(
+            request.url.path,
+            json=json.loads(request.content),
+            headers={"X-API-Key": request.headers["X-API-Key"]},
+        )
+        return httpx.Response(response.status_code, json=response.json())
+
+    result, latency_ms = request_risk_score(
+        "http://fraudshield.test",
+        "integration-test-key",
+        transaction,
+        transport=httpx.MockTransport(forward_to_fastapi),
+    )
+
+    assert result["model_version"] == "asymmetric-v1.2"
+    assert result["decision"] in {"ALLOW", "CHALLENGE", "BLOCK", "HARD_BLOCK"}
+    assert result["probability_calibrated"] is True
+    assert result["top_risk_increasing_factors"] or result["top_risk_decreasing_factors"]
+    assert latency_ms >= 0
+

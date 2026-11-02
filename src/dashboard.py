@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import tempfile
+from types import SimpleNamespace
 
 # Ensure silent Matplotlib config directory
 os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matplotlib"))
@@ -31,6 +32,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from src.calibration import model_output_to_score
+from src.dashboard_api import DashboardAPIError, request_risk_score
 from src.decision_engine import DecisionEngine
 from src.explain import TransactionExplainer, generate_shap_narrative
 from src.loss_functions import DEFAULT_C_FN, DEFAULT_C_FP, asymmetric_cost
@@ -537,17 +539,62 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
     preset_vals["Time"] = tx_time
     preset_vals["V14"] = tx_v14
 
+    api_base_url = os.getenv("FRAUDSHIELD_API_URL", "").strip()
+    if api_base_url:
+        st.caption("Live scoring is routed to the FastAPI /risk-score endpoint.")
+    else:
+        st.caption("Live scoring runs locally from saved artifacts. Set FRAUDSHIELD_API_URL to use FastAPI.")
+
     if st.button("🚀 Evaluate Transaction Risk & Generate Explanation", type="primary"):
-        if asym_model is None or scaler is None or explainer is None or decision_engine is None:
-            st.error("Artifacts not loaded. Please train models first via: python -m src.train")
+        api_latency_ms = None
+        if api_base_url:
+            transaction_payload = {
+                **{f"V{i}": float(preset_vals[f"V{i}"]) for i in range(1, 29)},
+                "Amount": float(tx_amount),
+                "Time": float(tx_time),
+            }
+            try:
+                with st.spinner("Sending the transaction to FastAPI for scoring and SHAP analysis..."):
+                    api_result, api_latency_ms = request_risk_score(
+                        api_base_url,
+                        os.getenv("FRAUDSHIELD_API_KEY", "").strip(),
+                        transaction_payload,
+                    )
+            except DashboardAPIError as exc:
+                st.error(str(exc))
+                st.stop()
+
+            attribution = api_result["raw_margin_attribution"]
+            decision = SimpleNamespace(
+                fraud_probability=float(api_result["fraud_probability"]),
+                decision=api_result["decision"],
+                threshold_used=float(api_result["threshold_used"]),
+                risk_tier=api_result["risk_tier"],
+                recommendation=api_result["recommendation"],
+            )
+            local_exp = {
+                "top_risk_increasing_factors": api_result["top_risk_increasing_factors"],
+                "top_risk_decreasing_factors": api_result["top_risk_decreasing_factors"],
+                "base_value_log_odds": float(attribution["base_value_log_odds"]),
+                "total_log_odds": float(attribution["total_log_odds"]),
+                "raw_model_score": float(attribution["raw_model_score"]),
+            }
+            narrative = api_result["explanation"]
+            calibrated = api_result["probability_calibrated"]
+            calibration_method = api_result.get("calibration_method")
+            model_version = api_result["model_version"]
+            scoring_source = "FastAPI"
         else:
-            with st.spinner("Processing feature engineering and calculating SHAP tree traversal..."):
+            if asym_model is None or scaler is None or explainer is None or decision_engine is None:
+                st.error("Local model artifacts are unavailable. Train the model or configure FRAUDSHIELD_API_URL.")
+                st.stop()
+
+            with st.spinner("Processing feature engineering and calculating local SHAP explanations..."):
                 df_tx = pd.DataFrame([preset_vals])
                 df_engineered = engineer_features(df_tx)
                 X_raw = df_engineered[FEATURE_COLS].values
                 X_scaled = scaler.transform(X_raw)
 
-                # Inference via booster
                 dmat = xgb.DMatrix(X_scaled, feature_names=FEATURE_COLS)
                 booster = asym_model["model"]
                 best_iteration = getattr(booster, "best_iteration", None)
@@ -556,107 +603,120 @@ elif tab_choice == "🔍 Live Transaction Scoring & SHAP":
                 else:
                     raw_score = booster.predict(dmat)[0]
 
-                proba_score = model_output_to_score(raw_score, output_type=asym_model.get("output_type", "raw_margin"), calibrator=asym_model.get("calibrator"))
-
-                # Unified Decision Engine Evaluation
+                proba_score = model_output_to_score(
+                    raw_score,
+                    output_type=asym_model.get("output_type", "raw_margin"),
+                    calibrator=asym_model.get("calibrator"),
+                )
                 decision = decision_engine.evaluate(proba_score)
-
-                # Local SHAP Explanation
-                local_exp = explainer.explain_instance(X_scaled, raw_feature_dict=preset_vals, top_k=5)
+                local_exp = explainer.explain_instance(
+                    X_scaled, raw_feature_dict=preset_vals, top_k=5
+                )
                 narrative = generate_shap_narrative(local_exp, decision.decision, top_k=3)
+                calibrated = bool(
+                    asym_model.get("probability_calibrated", asym_model.get("calibrator") is not None)
+                )
+                calibration_method = asym_model.get("calibration_method")
+                model_version = str(asym_model.get("model_version", "local-artifact"))
+                scoring_source = "Local Streamlit model"
 
-                # Append to history
-                st.session_state["prediction_history"].append({
-                    "Timestamp": pd.Timestamp.now().strftime("%H:%M:%S"),
-                    "Amount": tx_amount,
-                    "Probability": f"{decision.fraud_probability:.4%}",
-                    "Risk Tier": decision.risk_tier,
-                    "Decision": decision.decision,
-                })
+        st.session_state["prediction_history"].append({
+            "Timestamp": pd.Timestamp.now().strftime("%H:%M:%S"),
+            "Amount": tx_amount,
+            "Probability / Score": f"{decision.fraud_probability:.4%}",
+            "Risk Tier": decision.risk_tier,
+            "Decision": decision.decision,
+            "Source": scoring_source,
+            "Model": model_version,
+        })
 
-            st.markdown("---")
-            st.markdown("### 🎯 Decision Summary")
+        st.markdown("---")
+        st.markdown("### 🎯 Decision Summary")
 
-            badge_class = {
-                "ALLOW": "badge-allow",
-                "CHALLENGE": "badge-challenge",
-                "BLOCK": "badge-block",
-                "HARD_BLOCK": "badge-hard-block",
-            }.get(decision.decision, "badge-allow")
+        badge_class = {
+            "ALLOW": "badge-allow",
+            "CHALLENGE": "badge-challenge",
+            "BLOCK": "badge-block",
+            "HARD_BLOCK": "badge-hard-block",
+        }.get(decision.decision, "badge-allow")
 
-            r1, r2, r3, r4 = st.columns(4)
-            calibrated = bool(asym_model.get("probability_calibrated", asym_model.get("calibrator") is not None))
-            r1.metric("Calibrated Fraud Probability" if calibrated else "Model Risk Score", f"{decision.fraud_probability:.4%}")
-            if not calibrated:
-                st.caption("This artifact has no saved calibrator; the value is an uncalibrated model risk score, not a posterior probability.")
-            r2.metric("Decision Threshold Used", f"{decision.threshold_used:.3f}")
-            r3.metric("Assigned Risk Tier", decision.risk_tier)
-            with r4:
-                st.markdown("**Operational Action**")
-                st.markdown(f'<span class="{badge_class}">{decision.decision}</span>', unsafe_allow_html=True)
-                st.caption(decision.recommendation)
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Calibrated Fraud Probability" if calibrated else "Model Risk Score", f"{decision.fraud_probability:.4%}")
+        if not calibrated:
+            st.caption("This is an uncalibrated model risk score, not a posterior probability.")
+        r2.metric("Decision Threshold Used", f"{decision.threshold_used:.3f}")
+        r3.metric("Assigned Risk Tier", decision.risk_tier)
+        with r4:
+            st.markdown("**Operational Action**")
+            st.markdown(f'<span class="{badge_class}">{decision.decision}</span>', unsafe_allow_html=True)
+            st.caption(decision.recommendation)
 
-            # SHAP Narrative
-            st.markdown("---")
-            st.markdown("### 🧠 SHAP Attribution Narrative")
-            for item in narrative:
-                st.markdown(f"- {item}")
+        latency_note = (
+            f" · API round-trip {api_latency_ms:.0f} ms"
+            if api_latency_ms is not None
+            else ""
+        )
+        st.caption(f"Scoring source: {scoring_source} · model: {model_version}{latency_note}")
 
-            # Local SHAP Feature Breakdown
-            st.markdown("---")
-            st.markdown("### 🔍 Exact Instance-Level SHAP Feature Contributions")
-            st.caption(
-                "SHAP values reconstruct the XGBoost raw margin before calibration: "
-                "raw margin = baseline value + sum(feature attributions). The decision uses the score shown above."
-            )
+        st.markdown("---")
+        st.markdown("### 🧠 SHAP Attribution Narrative")
+        for item in narrative:
+            st.markdown(f"- {item}")
 
-            sh_c1, sh_c2 = st.columns(2)
-            with sh_c1:
-                st.markdown("#### 🚨 Top Risk-Increasing Drivers (Pushed Toward Fraud)")
-                if local_exp["top_risk_increasing_factors"]:
-                    up_df = pd.DataFrame([
-                        {
-                            "Feature": f["feature"],
-                            "Raw Input Value": f["raw_value"],
-                            "SHAP Impact (+ log-odds)": f"+{f['shap_value']:.4f}",
-                        }
-                        for f in local_exp["top_risk_increasing_factors"]
-                    ])
-                    st.table(up_df)
-                else:
-                    st.write("No features elevated the score above baseline.")
+        st.markdown("---")
+        st.markdown("### 🔍 Exact Instance-Level SHAP Feature Contributions")
+        st.caption(
+            "SHAP values reconstruct the XGBoost raw margin before calibration: "
+            "raw margin = baseline value + sum(feature attributions). The decision uses the score shown above."
+        )
 
-            with sh_c2:
-                st.markdown("#### 🛡️ Top Risk-Mitigating Drivers (Pushed Toward Legitimacy)")
-                if local_exp["top_risk_decreasing_factors"]:
-                    down_df = pd.DataFrame([
-                        {
-                            "Feature": f["feature"],
-                            "Raw Input Value": f["raw_value"],
-                            "SHAP Impact (- log-odds)": f"{f['shap_value']:.4f}",
-                        }
-                        for f in local_exp["top_risk_decreasing_factors"]
-                    ])
-                    st.table(down_df)
-                else:
-                    st.write("No features significantly lowered the score.")
+        sh_c1, sh_c2 = st.columns(2)
+        with sh_c1:
+            st.markdown("#### 🚨 Top Risk-Increasing Drivers (Pushed Toward Fraud)")
+            if local_exp["top_risk_increasing_factors"]:
+                up_df = pd.DataFrame([
+                    {
+                        "Feature": f["feature"],
+                        "Raw Input Value": f["raw_value"],
+                        "SHAP Impact (+ log-odds)": f"+{f['shap_value']:.4f}",
+                    }
+                    for f in local_exp["top_risk_increasing_factors"]
+                ])
+                st.table(up_df)
+            else:
+                st.write("No features elevated the score above baseline.")
 
-            shap_shift = local_exp["total_log_odds"] - local_exp["base_value_log_odds"]
-            calibration_note = (
-                f"Platt-calibrated decision score: **{decision.fraud_probability:.4%}**. "
-                "The calibrated score above is used for the action."
-                if calibrated
-                else f"Uncalibrated decision score: **{decision.fraud_probability:.4%}**. "
-                "This score is a model risk score, not a posterior probability."
-            )
-            st.info(
-                f"**Raw-margin attribution check (pre-calibration):**  \n"
-                f"Baseline margin: `{local_exp['base_value_log_odds']:+.4f}`; "
-                f"sum of SHAP contributions: `{shap_shift:+.4f}`; "
-                f"reconstructed raw margin: `{local_exp['total_log_odds']:+.4f}`; "
-                f"raw sigmoid score: `{local_exp['raw_model_score']:.4%}`.  \n"
-                f"{calibration_note}"
-            )
+        with sh_c2:
+            st.markdown("#### 🛡️ Top Risk-Mitigating Drivers (Pushed Toward Legitimacy)")
+            if local_exp["top_risk_decreasing_factors"]:
+                down_df = pd.DataFrame([
+                    {
+                        "Feature": f["feature"],
+                        "Raw Input Value": f["raw_value"],
+                        "SHAP Impact (- log-odds)": f"{f['shap_value']:.4f}",
+                    }
+                    for f in local_exp["top_risk_decreasing_factors"]
+                ])
+                st.table(down_df)
+            else:
+                st.write("No features significantly lowered the score.")
+
+        shap_shift = local_exp["total_log_odds"] - local_exp["base_value_log_odds"]
+        calibration_note = (
+            f"Calibrated decision score ({calibration_method or 'saved calibrator'}): "
+            f"**{decision.fraud_probability:.4%}**. The calibrated score above is used for the action."
+            if calibrated
+            else f"Uncalibrated decision score: **{decision.fraud_probability:.4%}**. "
+                 "This score is a model risk score, not a posterior probability."
+        )
+        st.info(
+            f"**Raw-margin attribution check (pre-calibration):**  \n"
+            f"Baseline margin: `{local_exp['base_value_log_odds']:+.4f}`; "
+            f"sum of SHAP contributions: `{shap_shift:+.4f}`; "
+            f"reconstructed raw margin: `{local_exp['total_log_odds']:+.4f}`; "
+            f"raw sigmoid score: `{local_exp['raw_model_score']:.4%}`.  \n"
+            f"{calibration_note}"
+        )
 
     # Recent Predictions Section
     if st.session_state["prediction_history"]:

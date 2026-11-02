@@ -217,10 +217,12 @@ Opens the Streamlit operations and simulation interface:
 streamlit run src/dashboard.py
 ```
 
+When `FRAUDSHIELD_API_URL` is set, the live-scoring tab sends each transaction payload to FastAPI's `/risk-score` endpoint and displays the returned decision and SHAP explanation. If the API is unavailable or rejects the request, the dashboard shows a safe error and does not substitute local inference. With the URL unset, live scoring uses the local model artifacts.
+
 Features included:
 - **Model Comparison & Audit**: Side-by-side held-out metrics, confusion matrices, and PR/ROC curves.
 - **Threshold & Cost Simulator**: Sliders for $C_{FP}$, $C_{FN}$, and decision threshold with live cost curve visualization.
-- **Live Transaction Scoring**: Preset scenarios (Normal, Suspicious, Borderline) with local SHAP attribution; set `FRAUDSHIELD_API_URL` to route live scoring through FastAPI.
+- **Live Transaction Scoring**: Preset scenarios (Normal, Suspicious, Borderline) call FastAPI `/risk-score` when `FRAUDSHIELD_API_URL` is set, showing the scoring source, model version, SHAP attribution, and request latency; otherwise scoring runs locally.
 - **Mathematical & Behavioral Theory**: Mathematical derivations and Prospect Theory curves.
 
 ### 5. Launch the REST API
