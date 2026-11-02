@@ -254,6 +254,33 @@ if tab_choice == "📊 Model Comparison & Audit":
             })
             st.dataframe(comparison_df, hide_index=True)
 
+            calibration_report = metrics.get("calibration_evaluation", {})
+            bootstrap = calibration_report.get("brier_score_bootstrap")
+            group_report = calibration_report.get("held_out_groups", {})
+            if bootstrap or group_report:
+                with st.expander("Calibration uncertainty and transaction groups"):
+                    if bootstrap:
+                        st.metric(
+                            "Held-out Brier score (bootstrap 95% interval)",
+                            f"{bootstrap['estimate']:.6f}",
+                            f"[{bootstrap['lower_95']:.6f}, {bootstrap['upper_95']:.6f}]",
+                        )
+                        st.caption(bootstrap.get("note", ""))
+                    group_rows = []
+                    for group_name in ("amount_tertiles", "dataset_time_halves"):
+                        for label, values in group_report.get(group_name, {}).items():
+                            group_rows.append({
+                                "Group": f"{group_name.replace('_', ' ').title()}: {label}",
+                                "Transactions": values["transactions"],
+                                "Fraud cases": values["fraud_transactions"],
+                                "Mean predicted": values["mean_predicted_probability"],
+                                "Observed fraud rate": values["observed_fraud_rate"],
+                                "Brier score": values["brier_score"],
+                            })
+                    if group_rows:
+                        st.dataframe(pd.DataFrame(group_rows), hide_index=True)
+                    st.caption(group_report.get("grouping_note", ""))
+
         with col_right:
             st.markdown("### 🎯 Key Evaluation Takeaways")
             symmetric_positives = s_m["true_positives"] + s_m["false_negatives"]

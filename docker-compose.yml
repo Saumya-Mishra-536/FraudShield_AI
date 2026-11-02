@@ -4,6 +4,9 @@ services:
     command: ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       MODEL_DIR: /app/models
+      FRAUDSHIELD_ENV: ${FRAUDSHIELD_ENV:-development}
+      FRAUDSHIELD_API_KEY: ${FRAUDSHIELD_API_KEY:-}
+      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-60}
     ports:
       - "8000:8000"
     healthcheck:
@@ -18,5 +21,10 @@ services:
     environment:
       MODEL_DIR: /app/models
       OUTPUT_DIR: /app/outputs
+      FRAUDSHIELD_API_URL: http://api:8000
+      FRAUDSHIELD_API_KEY: ${FRAUDSHIELD_API_KEY:-}
+    depends_on:
+      api:
+        condition: service_healthy
     ports:
       - "8501:8501"

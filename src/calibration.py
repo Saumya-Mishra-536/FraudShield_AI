@@ -21,6 +21,86 @@ def fit_platt_calibrator(raw_scores: np.ndarray, labels: np.ndarray) -> Logistic
     return calibrator
 
 
+def bootstrap_brier_interval(
+    y_true: np.ndarray,
+    probabilities: np.ndarray,
+    *,
+    n_bootstrap: int = 500,
+    random_state: int = 42,
+) -> dict:
+    """Return a percentile 95% bootstrap interval for held-out Brier score."""
+    y = np.asarray(y_true, dtype=int).reshape(-1)
+    p = np.asarray(probabilities, dtype=float).reshape(-1)
+    if y.size == 0 or y.size != p.size:
+        raise ValueError("y_true and probabilities must have the same non-zero length")
+    if not np.isin(y, [0, 1]).all() or not np.isfinite(p).all() or ((p < 0) | (p > 1)).any():
+        raise ValueError("labels must be binary and probabilities finite in [0, 1]")
+    if n_bootstrap < 100:
+        raise ValueError("n_bootstrap must be at least 100")
+
+    rng = np.random.default_rng(random_state)
+    estimates = np.empty(n_bootstrap, dtype=float)
+    n = y.size
+    for i in range(n_bootstrap):
+        sample = rng.integers(0, n, size=n)
+        estimates[i] = float(np.mean((p[sample] - y[sample]) ** 2))
+    return {
+        "method": "Nonparametric row bootstrap; percentile interval",
+        "confidence_level": 0.95,
+        "replicates": int(n_bootstrap),
+        "estimate": float(np.mean((p - y) ** 2)),
+        "lower_95": float(np.quantile(estimates, 0.025)),
+        "upper_95": float(np.quantile(estimates, 0.975)),
+        "note": "Sampling uncertainty on this held-out random split; not a future-period guarantee.",
+    }
+
+
+def _calibration_group_summary(y: np.ndarray, p: np.ndarray) -> dict:
+    return {
+        "transactions": int(y.size),
+        "fraud_transactions": int(y.sum()),
+        "mean_predicted_probability": float(p.mean()) if p.size else None,
+        "observed_fraud_rate": float(y.mean()) if y.size else None,
+        "brier_score": float(np.mean((p - y) ** 2)) if y.size else None,
+    }
+
+
+def grouped_calibration_report(
+    y_true: np.ndarray,
+    probabilities: np.ndarray,
+    amount: np.ndarray,
+    time_seconds: np.ndarray,
+) -> dict:
+    """Summarize held-out calibration by amount tertiles and dataset-time halves."""
+    y = np.asarray(y_true, dtype=int).reshape(-1)
+    p = np.asarray(probabilities, dtype=float).reshape(-1)
+    amount = np.asarray(amount, dtype=float).reshape(-1)
+    time_seconds = np.asarray(time_seconds, dtype=float).reshape(-1)
+    if not (y.size == p.size == amount.size == time_seconds.size) or y.size == 0:
+        raise ValueError("labels, probabilities, amount, and time must have equal non-zero lengths")
+    if not all(np.isfinite(values).all() for values in (p, amount, time_seconds)):
+        raise ValueError("probabilities and grouping values must be finite")
+
+    report = {}
+    for name, values, labels, quantiles in (
+        ("amount_tertiles", amount, ("low", "middle", "high"), (1 / 3, 2 / 3)),
+        ("dataset_time_halves", time_seconds, ("earlier", "later"), (0.5,)),
+    ):
+        boundaries = np.unique(np.quantile(values, quantiles))
+        codes = np.digitize(values, boundaries, right=True)
+        report[name] = {}
+        for code, label in enumerate(labels):
+            mask = codes == code
+            if mask.any():
+                report[name][label] = _calibration_group_summary(y[mask], p[mask])
+    return {
+        "grouping_note": (
+            "Descriptive slices from the same held-out random split. Time halves are not an out-of-time test."
+        ),
+        **report,
+    }
+
+
 def model_output_to_score(raw_value: float, output_type: str = "raw_margin",
                           calibrator: Optional[Any] = None) -> float:
     """Convert one model output to a score in [0, 1], applying calibration if present."""

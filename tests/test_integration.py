@@ -162,3 +162,33 @@ def test_dynamic_test_predictions_match_saved_model_comparison():
 
     calc_cost = 5.0 * fp + 20.0 * fn
     assert calc_cost == pytest.approx(a_m["total_asymmetric_cost"])
+
+
+
+def test_fresh_calibration_report_and_cross_fitted_threshold_artifact():
+    """CI training must emit calibration uncertainty, subgroup slices, and a cross-fit method."""
+    report_path = os.path.join(ROOT, "outputs", "calibration_evaluation.json")
+    metrics_path = os.path.join(ROOT, "outputs", "model_comparison.json")
+    bundle_path = os.path.join(ROOT, "models", "asymmetric_model.pkl")
+    for path in (report_path, metrics_path, bundle_path):
+        if not os.path.isfile(path):
+            pytest.fail(f"Required freshly generated artifact is missing: {path}", pytrace=False)
+
+    with open(report_path, "r", encoding="utf-8") as file:
+        report = json.load(file)
+    interval = report["brier_score_bootstrap"]
+    assert interval["replicates"] >= 100
+    assert interval["lower_95"] <= interval["estimate"] <= interval["upper_95"]
+    groups = report["held_out_groups"]
+    assert set(groups["amount_tertiles"]) == {"low", "middle", "high"}
+    assert set(groups["dataset_time_halves"]) == {"earlier", "later"}
+    assert "not an out-of-time test" in groups["grouping_note"]
+
+    with open(metrics_path, "r", encoding="utf-8") as file:
+        metrics = json.load(file)
+    assert "calibration_evaluation" in metrics
+    assert metrics["metadata"]["threshold_selection_method"].startswith("5-fold cross-fitted")
+
+    bundle = joblib.load(bundle_path)
+    assert bundle["calibrator"] is not None
+    assert "cross-fitted" in bundle["threshold_selection_method"]

@@ -17,10 +17,14 @@ Features:
 """
 from __future__ import annotations
 
+import hmac
+import logging
 import math
 import os
 import sys
 import tempfile
+import threading
+import time
 from typing import Any, Dict, List, Optional
 
 # Ensure silent Matplotlib config directory
@@ -29,7 +33,9 @@ os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "matpl
 import joblib
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 import uvicorn
 
@@ -98,6 +104,8 @@ class TransactionRequest(BaseModel):
         return self
 
     model_config = {
+        "strict": True,
+        "allow_inf_nan": False,
         "json_schema_extra": {
             "example": {
                 "V1": -1.3598, "V2": -0.0728, "V3": 2.5363, "V4": 1.3782,
@@ -135,12 +143,16 @@ class RiskScoreResponse(BaseModel):
     calibration_method: Optional[str] = None
     is_fraud: bool
     risk_tier: str
+    threshold_used: float
     risk_score: float = Field(..., description="Model score scaled to 0-100.")
     decision: str
     explanation: List[str] = Field(default_factory=list, description="SHAP-derived narrative explanation.")
     top_risk_factors: List[Dict[str, Any]] = Field(default_factory=list, description="Top features by global gain.")
     local_shap_drivers: List[Dict[str, Any]] = Field(default_factory=list, description="Instance-specific local SHAP attributions.")
-    global_importance_reference: List[Dict[str, Any]] = Field(default_factory=list, description="Dataset-level global split importance reference.")
+    top_risk_increasing_factors: List[Dict[str, Any]] = Field(default_factory=list)
+    top_risk_decreasing_factors: List[Dict[str, Any]] = Field(default_factory=list)
+    raw_margin_attribution: Dict[str, float] = Field(default_factory=dict)
+    global_importance_reference: List[Dict[str, Any]] = Field(default_factory=list)
     expected_exposure_amount_units: Optional[float] = Field(None, description="P * Amount, returned only when a saved calibrator is available.")
     recommendation: str = Field(..., description="Operational action recommendation.")
     model_version: str
@@ -162,11 +174,121 @@ class HealthResponse(BaseModel):
 app = FastAPI(
     title="FraudShield AI — Cost-Sensitive Fraud Detection API",
     description=(
-        "Production-ready inference and explainability microservice for credit card fraud detection. "
-        "Employs an asymmetric XGBoost model with Kahneman-Tversky loss weighting and SHAP TreeExplainer attributions."
+        "Inference and explainability API for the FraudShield research prototype. "
+        "Use FRAUDSHIELD_API_KEY and the process-local rate limit when exposing it."
     ),
-    version="1.1.0",
+    version="1.2.0",
 )
+
+
+class APIProtectionMiddleware:
+    """Optional API-key authentication, process-local rate limiting, and safe request logs."""
+
+    _PUBLIC_HEALTH_PATHS = {"/health", "/health/ready"}
+
+    def __init__(self, app):
+        self.app = app
+        self._windows = {}
+        self._lock = threading.Lock()
+        self._logger = logging.getLogger("fraudshield.api")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        started = time.perf_counter()
+        path = scope.get("path", "")
+        method = scope.get("method", "UNKNOWN")
+
+        async def tracked_send(message):
+            if message["type"] == "http.response.start":
+                self._logger.info(
+                    "http_request",
+                    extra={
+                        "method": method,
+                        "path": path,
+                        "status_code": message["status"],
+                        "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                    },
+                )
+            await send(message)
+
+        if path not in self._PUBLIC_HEALTH_PATHS:
+            client = scope.get("client")
+            client_key = client[0] if client else "unknown"
+            now = time.monotonic()
+            with self._lock:
+                window_start, count = self._windows.get(client_key, (now, 0))
+                if now - window_start >= 60:
+                    window_start, count = now, 0
+                limit = max(1, int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "60")))
+                if count >= limit:
+                    retry_after = max(1, math.ceil(60 - (now - window_start)))
+                    response = JSONResponse(
+                        status_code=429,
+                        content={"detail": "Rate limit exceeded. Try again later."},
+                        headers={"Retry-After": str(retry_after)},
+                    )
+                    await response(scope, receive, tracked_send)
+                    return
+                self._windows[client_key] = (window_start, count + 1)
+                if len(self._windows) > 10_000:
+                    self._windows = {
+                        key: value for key, value in self._windows.items()
+                        if now - value[0] < 60
+                    }
+
+            expected_key = os.getenv("FRAUDSHIELD_API_KEY", "").strip()
+            production = os.getenv("FRAUDSHIELD_ENV", "development").lower() == "production"
+            if production and not expected_key:
+                response = JSONResponse(
+                    status_code=503,
+                    content={"detail": "API key authentication is not configured."},
+                )
+                await response(scope, receive, tracked_send)
+                return
+            if expected_key:
+                headers = dict(scope.get("headers", []))
+                provided_key = headers.get(b"x-api-key", b"").decode("latin-1")
+                if not hmac.compare_digest(provided_key, expected_key):
+                    response = JSONResponse(
+                        status_code=401,
+                        content={"detail": "Missing or invalid API key."},
+                        headers={"WWW-Authenticate": "ApiKey"},
+                    )
+                    await response(scope, receive, tracked_send)
+                    return
+
+        await self.app(scope, receive, tracked_send)
+
+
+app.add_middleware(APIProtectionMiddleware)
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_validation_error(request: Request, exc: RequestValidationError):
+    """Return field names only; validation input values may contain transaction data."""
+    fields = sorted({
+        str(error["loc"][-1])
+        for error in exc.errors()
+        if error.get("loc") and error["loc"][-1] != "body"
+    })
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Invalid request payload.", "fields": fields},
+    )
+
+
+
+@app.exception_handler(Exception)
+async def safe_internal_error(request: Request, exc: Exception):
+    """Hide internal details and avoid logging request bodies or transaction values."""
+    logging.getLogger("fraudshield.api").error(
+        "unhandled_api_error",
+        extra={"method": request.method, "path": request.url.path, "error_type": type(exc).__name__},
+    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
 
 
 def load_artifacts() -> None:
@@ -193,7 +315,6 @@ def load_artifacts() -> None:
 
     # Initialize SHAP TreeExplainer on booster
     _explainer = TransactionExplainer(_model["model"], _feature_names)
-    import logging
     logging.getLogger("fraudshield.api").info(
         "model_artifacts_loaded", extra={"threshold": calibrated_t,
         "probability_calibrated": bool(bundle.get("probability_calibrated", bundle.get("calibrator") is not None)),
@@ -204,14 +325,20 @@ def load_artifacts() -> None:
 @app.on_event("startup")
 async def startup_event() -> None:
     global _startup_error
-    import logging
+    logger = logging.getLogger("fraudshield.api")
+    if not os.getenv("FRAUDSHIELD_API_KEY", "").strip():
+        if os.getenv("FRAUDSHIELD_ENV", "development").lower() == "production":
+            logger.error("api_key_missing_in_production")
+        else:
+            logger.warning("api_key_auth_disabled", extra={"configuration": "FRAUDSHIELD_API_KEY is unset"})
     try:
         load_artifacts()
         _startup_error = None
     except (RuntimeError, OSError, ValueError) as exc:
         _startup_error = str(exc)
-        logging.getLogger("fraudshield.api").exception(
-            "model_artifact_load_failed", extra={"model_dir": MODELS_DIR}
+        logger.error(
+            "model_artifact_load_failed",
+            extra={"model_dir": MODELS_DIR, "error_type": type(exc).__name__},
         )
 
 
@@ -279,23 +406,33 @@ def get_top_risk_factors(X_scaled: np.ndarray, top_k: int = 5) -> List[Dict[str,
 def health():
     """Service health and artifact availability check."""
     loaded = _model is not None and _scaler is not None and _explainer is not None
+    auth_misconfigured = (
+        os.getenv("FRAUDSHIELD_ENV", "development").lower() == "production"
+        and not os.getenv("FRAUDSHIELD_API_KEY", "").strip()
+    )
     return {
-        "status": "healthy" if loaded else "degraded",
+        "status": "healthy" if loaded and not auth_misconfigured else "degraded",
         "model_loaded": _model is not None,
         "scaler_loaded": _scaler is not None,
         "explainer_loaded": _explainer is not None,
         "calibrated_threshold": _decision_engine.threshold if _decision_engine else None,
         "probability_calibrated": bool(_model and _model.get("probability_calibrated", _model.get("calibrator") is not None)),
         "calibration_method": _model.get("calibration_method") if _model else None,
-        "startup_error": _startup_error,
+        "startup_error": (
+            "API key authentication is not configured."
+            if auth_misconfigured
+            else "Model artifacts are unavailable." if _startup_error else None
+        ),
     }
 
 
 @app.get("/health/ready", tags=["System"])
 def readiness():
     """Readiness probe for deployment platforms; 503 until inference artifacts load."""
+    if os.getenv("FRAUDSHIELD_ENV", "development").lower() == "production" and not os.getenv("FRAUDSHIELD_API_KEY", "").strip():
+        raise HTTPException(status_code=503, detail="API key authentication is not configured.")
     if _model is None or _scaler is None or _explainer is None or _decision_engine is None:
-        raise HTTPException(status_code=503, detail=_startup_error or "Model artifacts are not loaded.")
+        raise HTTPException(status_code=503, detail="Model artifacts are unavailable.")
     return {"status": "ready"}
 
 
@@ -312,7 +449,10 @@ def model_info():
         "probability_calibrated": bool(_model.get("probability_calibrated", _model.get("calibrator") is not None)),
         "score_semantics": "calibrated_probability" if _model.get("probability_calibrated", _model.get("calibrator") is not None) else "uncalibrated_model_risk_score",
         "calibration_method": _model.get("calibration_method"),
-        "version": "1.1.0",
+        "threshold_selection_method": _model.get("threshold_selection_method"),
+        "version": "1.2.0",
+        "api_key_auth_configured": bool(os.getenv("FRAUDSHIELD_API_KEY", "").strip()),
+        "rate_limit_per_minute_per_process": max(1, int(os.getenv("API_RATE_LIMIT_PER_MINUTE", "60"))),
         "dataset": "Kaggle Credit Card Fraud Detection (MLG-ULB, 284,807 transactions)",
         "decision_thresholds": {
             "fraud_decision_threshold": _decision_engine.threshold,
@@ -357,7 +497,7 @@ def predict(tx: TransactionRequest):
         "decision": decision.decision,
         "risk_tier": decision.risk_tier,
         "threshold_used": decision.threshold_used,
-        "model_version": "asymmetric-v1.1",
+        "model_version": "asymmetric-v1.2",
     }
 
 
@@ -396,11 +536,20 @@ def risk_score(tx: TransactionRequest):
         "calibration_method": _model.get("calibration_method") if _model else None,
         "is_fraud": decision.is_fraud,
         "risk_tier": decision.risk_tier,
+        "threshold_used": decision.threshold_used,
         "risk_score": round(decision.fraud_probability * 100.0, 1),
         "decision": decision.decision,
         "explanation": explanation,
         "top_risk_factors": top_factors,
         "local_shap_drivers": shap_res["top_drivers_by_magnitude"],
+        "top_risk_increasing_factors": shap_res["top_risk_increasing_factors"],
+        "top_risk_decreasing_factors": shap_res["top_risk_decreasing_factors"],
+        "raw_margin_attribution": {
+            "base_value_log_odds": float(shap_res["base_value_log_odds"]),
+            "sum_shap_values": float(shap_res["total_log_odds"] - shap_res["base_value_log_odds"]),
+            "total_log_odds": float(shap_res["total_log_odds"]),
+            "raw_model_score": float(shap_res["raw_model_score"]),
+        },
         "global_importance_reference": global_ref["top_features"],
         "expected_exposure_amount_units": expected_exposure,
         "recommendation": decision.recommendation,

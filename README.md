@@ -14,7 +14,7 @@ Most fraud classifiers optimize symmetric metrics such as standard cross-entropy
 FraudShield AI implements:
 1. **Asymmetric Cost-Weighted Gradient Boosting**: A custom second-order XGBoost objective derived directly from weighted logistic loss, incorporating Kahneman & Tversky Prospect Theory loss aversion.
 2. **Stratified Random Preprocessing**: Train/validation/test splits, train-only scaling, cyclic time encoding, and optional train-only SMOTE.
-3. **Validation-Only Calibration and Threshold Selection**: Platt scaling is fitted on validation raw margins; the operating threshold is selected on calibrated validation scores; test data is reserved for evaluation.
+3. **Cross-Fitted Calibration and Threshold Selection**: Five-fold out-of-fold Platt scores on validation rows select the threshold; a final Platt calibrator is then fitted on all validation rows; test data is reserved for evaluation.
 4. **Local SHAP Attribution**: Transaction-level explainability via `shap.TreeExplainer`, strictly distinguishing instance risk drivers from global feature importance.
 5. **Interactive Operations Dashboard & REST API**: Live scenario simulator, operational risk tiers, and complete FastAPI service.
 
@@ -45,7 +45,8 @@ flowchart TD
     H --> I["Outputs & Persisted Artifacts\nmodels/ · outputs/model_comparison.json · plots/"]
     
     I --> J1["FastAPI Inference Engine\n(src/api.py)"]
-    I --> J2["Interactive Streamlit Dashboard\n(src/dashboard.py)"]
+    I --> J2["Streamlit Evaluation Dashboard\n(src/dashboard.py)"]
+    J1 -->|Optional live scoring via FRAUDSHIELD_API_URL| J2
     I --> J3["SHAP Local Explainer\n(src/explain.py)"]
 ```
 
@@ -57,20 +58,21 @@ flowchart TD
 flowchart LR
     A[Training split] --> B[Fit scaler and model]
     B --> C[Validation raw margins]
-    C --> D[Fit Platt calibrator]
-    D --> E[Select threshold on calibrated validation scores]
-    E --> F[Held-out test evaluation]
-    F --> G[Brier score and reliability curve]
-    D --> H[Saved model bundle]
-    H --> I[FastAPI]
-    H --> J[Streamlit local inference]
-    I --> K[Calibrated probability when calibrator exists]
-    I --> L[Uncalibrated risk score for legacy bundles]
+    C --> D[Fit five fold Platt calibrators]
+    D --> E[Select threshold from out of fold scores]
+    C --> F[Fit final Platt calibrator on full validation split]
+    E --> G[Held out test evaluation]
+    G --> H[Bootstrap Brier interval, group summaries, reliability curve]
+    F --> I[Saved model bundle]
+    I --> J[FastAPI]
+    I --> K[Streamlit local inference]
+    J --> L[Calibrated probability when calibrator exists]
+    J --> M[Uncalibrated risk score for legacy bundles]
 ```
 
 ## 📊 Audited Test Results (Held-Out Test Set: 56,962 Transactions)
 
-These results were regenerated with the pinned Python 3.12 environment. Platt scaling was fitted on validation raw margins; all metrics below are from the held-out test set. Cost totals use the illustrative $5/$20 assumptions.
+The table below reflects the currently committed model artifact bundle. CI now trains with the cross-fitted calibration and threshold-selection strategy described above; use the **Refresh calibrated artifacts** workflow to replace this snapshot with metrics from the updated training code. Costs use the illustrative $5/$20 assumptions.
 
 Reported on the untouched held-out test split after model, calibration, and threshold selection using validation data ($C_{FP} = \$5.00, C_{FN} = \$20.00$):
 
@@ -148,7 +150,7 @@ FraudShield AI strictly separates **local transaction explanations** from **glob
 The dashboard currently performs inference locally in the Streamlit process using the saved XGBoost model and scaler; it does not call the FastAPI service.
 
 ### 1. Installation
-Requires Python 3.12. CI installs the exact versions in `requirements.txt` and runs against the committed model and evaluation artifacts.
+Requires Python 3.12. CI installs the pinned versions in `requirements.txt`, downloads the repository dataset, trains fresh models, regenerates evaluation artifacts, and then runs integration tests.
 
 ```bash
 git clone https://github.com/Saumya-Mishra-536/FraudShield_AI.git
@@ -164,7 +166,7 @@ pip install -r requirements.txt
 > **Note on OpenMP**: On macOS (Apple Silicon), XGBoost requires `libomp`. If needed: `brew install libomp`.
 
 ### 2. Run the End-to-End Training Pipeline
-Trains symmetric and asymmetric models, optimizes decision thresholds on validation data, evaluates on the held-out test split, and writes comparison metrics:
+Trains symmetric and asymmetric models, selects the asymmetric threshold from out-of-fold Platt calibrated validation scores, evaluates once on the held-out test split, and writes comparison metrics plus calibration uncertainty and subgroup reports:
 
 ```bash
 python3 -m src.train
@@ -177,7 +179,7 @@ python3 -m src.train --use-smote   # Apply SMOTE to training split only
 ```
 
 ### 3. Run the Full Test Suite
-CI verifies committed model and evaluation artifacts, then runs real-artifact integration tests and the remaining suite under Python 3.12 with pinned dependencies:
+CI retrains from the repository dataset, regenerates every evaluation plot and calibration artifact, verifies the fresh outputs, and runs real-artifact integration tests followed by the remaining suite under Python 3.12 with pinned dependencies:
 
 ```bash
 pytest tests/ -v
@@ -185,7 +187,7 @@ pytest tests/ -v
 
 ### Probability calibration and score interpretation
 
-The asymmetric model uses a custom weighted logistic objective, so its raw sigmoid score is a ranking/risk score, not automatically a posterior probability. Training fits Platt scaling on validation raw margins, selects its operating threshold from calibrated validation scores, and reports held-out Brier score plus a reliability curve at `outputs/plots/calibration_curve.png`. The held-out test split is not used to fit calibration. The API includes `probability_calibrated` and `score_semantics`; expected exposure is returned only for calibrated output. Older artifacts without a calibrator are explicitly reported as uncalibrated model risk scores and return no expected-exposure estimate until retrained with `python -m src.train`.
+The asymmetric model uses a custom weighted logistic objective, so its raw sigmoid score is a ranking/risk score, not automatically a posterior probability. Training selects its operating threshold from five-fold out-of-fold Platt calibrated validation scores, then fits the served Platt calibrator on the full validation split. The held-out test split is not used for either choice. Evaluation reports a bootstrap 95% interval for Brier score, amount- and time-sliced descriptive calibration summaries, and a reliability curve at `outputs/plots/calibration_curve.png`. These intervals quantify sampling uncertainty on this random split; the time groups are not a later-period test. The API includes `probability_calibrated` and `score_semantics`; expected exposure is returned only for calibrated output. Set `FRAUDSHIELD_API_URL` and `FRAUDSHIELD_API_KEY` on the dashboard server to connect live scoring to a protected API. Docker Compose provides this internal connection by default.
 
 ### 4. Launch the Interactive Dashboard
 Opens the Streamlit operations and simulation interface:
@@ -197,17 +199,26 @@ streamlit run src/dashboard.py
 Features included:
 - **Model Comparison & Audit**: Side-by-side held-out metrics, confusion matrices, and PR/ROC curves.
 - **Threshold & Cost Simulator**: Sliders for $C_{FP}$, $C_{FN}$, and decision threshold with live cost curve visualization.
-- **Live Transaction Scoring**: Preset scenarios (Normal, Suspicious, Borderline) with full SHAP waterfall and force breakdown.
+- **Live Transaction Scoring**: Preset scenarios (Normal, Suspicious, Borderline) with local SHAP attribution; set `FRAUDSHIELD_API_URL` to route live scoring through FastAPI.
 - **Mathematical & Behavioral Theory**: Mathematical derivations and Prospect Theory curves.
 
 ### 5. Launch the REST API
-Starts the production-ready FastAPI service:
+Starts the FastAPI research service locally:
 
 ```bash
 uvicorn src.api:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Interactive OpenAPI documentation available at: `http://127.0.0.1:8000/docs`. See [documentation.md](documentation.md) for copyable sample requests and response semantics.
+For local development, API-key authentication is disabled when `FRAUDSHIELD_API_KEY` is unset. In production mode, set `FRAUDSHIELD_ENV=production`; the service then fails readiness and rejects protected requests if no key is configured. Before exposing the service, set a strong key and configure the process-local request limit:
+
+```bash
+export FRAUDSHIELD_ENV=production
+export FRAUDSHIELD_API_KEY="replace-with-a-long-random-secret"
+export API_RATE_LIMIT_PER_MINUTE=60
+uvicorn src.api:app --host 127.0.0.1 --port 8000
+```
+
+Send the key in the `X-API-Key` header. `/health` and `/health/ready` remain public for probes. The limiter is in memory per process; use a gateway or shared store for multi-worker/public deployments. Request logs include method, path, status, and duration only; invalid payload responses do not echo transaction values. See [documentation.md](documentation.md) for copyable requests.
 
 #### API Endpoints
 - `GET /health`: Service health and artifact load status.
@@ -234,7 +245,8 @@ FraudShield_AI/
 │   ├── symmetric_model.pkl
 │   └── scaler.pkl
 ├── outputs/                     # Persisted evaluation artifacts & figures
-│   ├── model_comparison.json   # Exact audited test set metrics
+│   ├── model_comparison.json   # Held-out test metrics and calibration report
+│   ├── calibration_evaluation.json # Bootstrap interval and group summaries
 │   └── plots/
 │       ├── calibration_curve.png       # Held-out reliability curve
 │       ├── confusion_matrix_comparison.png
@@ -270,7 +282,7 @@ FraudShield_AI/
 
 | Section | Details |
 | :--- | :--- |
-| **Model Name** | FraudShield Asymmetric Cost-Sensitive XGBoost (v1.0) |
+| **Model Name** | FraudShield Asymmetric Cost-Sensitive XGBoost (v1.2) |
 | **Model Type** | Gradient Boosted Decision Trees with Custom Loss |
 | **Dataset** | Kaggle Credit Card Fraud Detection (Université Libre de Bruxelles) |
 | **Dataset Size** | 284,807 European cardholder transactions across 2 days (492 fraud cases) |
@@ -286,12 +298,12 @@ FraudShield_AI/
 ## ⚠️ Limitations & Ethical Considerations
 
 1. **Short Historical Horizon**: The dataset spans only 48 hours. Real card networks experience cyclical weekly, monthly, and seasonal fraud shifts.
-2. **PCA Anonymization**: Features `V1`–`V28` are anonymized components from an internal PCA transformation. Operational deployment in production requires access to raw merchant categories, geolocation, device fingerprints, and transaction velocity features.
+2. **PCA Anonymization and Integration Boundary**: Features `V1`–`V28` are the output of an anonymizing PCA transform applied to the source provider's original transaction fields. Ordinary bank fields cannot be sent directly to this model. A real integration needs an upstream, versioned feature pipeline that reproduces the same PCA basis, input ordering, centering, scaling, and missing-value rules, or a newly trained model built from features available in the bank's environment. The transformation parameters and source fields are not provided by this dataset, so this repository cannot convert ordinary transaction records into its `V1`–`V28` inputs. It also does not model merchant categories, location, device fingerprints, or velocity features.
 3. **Cost Parameter Calibration**: Cost assumptions ($C_{FP} = \$5, C_{FN} = \$20$) vary by card product, interchange tier, and legal jurisdiction. Banks must calibrate these using empirical chargeback accounting and customer churn studies.
 4. **False Positive Harm**: False declines disproportionately impact legitimate customers traveling or making atypical purchases. Step-up authentication (`CHALLENGE`) is recommended over immediate hard blocks.
 5. **Adversarial Drift**: Fraudsters adapt behaviors when detection boundaries become apparent. Periodic retraining, concept drift monitoring, and shadow-mode evaluation are required before production promotion.
 6. **Random Split and Temporal Leakage**: The code uses stratified random splits, not a forward-in-time validation design. The source data covers roughly two days, so nearby transactions and repeated cardholder behavior can appear across splits. Reported results do not establish future-period performance.
-7. **Calibration Is Not Permanent**: Platt scaling is fitted on the validation split and evaluated on the held-out split using Brier score and a reliability curve. Calibration can drift as prevalence and transaction behavior change; production use would need rolling calibration checks. The small number of fraud cases in the test set makes calibration bins noisy.
+7. **Calibration Is Not Permanent**: A cross-fitted validation strategy reduces the reuse of the same validation labels for Platt calibration and threshold selection, and the final calibrator is refitted on the full validation split. Bootstrap Brier intervals and amount/time group summaries describe uncertainty on the held-out random split only. The dataset spans about 48 hours and the time groups are not a later-period evaluation; the small fraud count still makes subgroup estimates noisy. Evaluation on a later period or independent dataset remains outstanding.
 8. **Exposure Is Only a Proxy**: When calibrated probabilities are available, probability multiplied by transaction Amount is an exposure proxy. It is not expected chargeback loss because realized loss, recoveries, fees, and customer impact are not modeled.
 9. **No Demographic Fairness Audit**: PCA-anonymized fields do not provide enough information to test disparate impact across protected or vulnerable groups.
 

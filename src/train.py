@@ -27,6 +27,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from data.load_kaggle_data import get_dataset
+from src.calibration import bootstrap_brier_interval, grouped_calibration_report
 from src.loss_functions import DEFAULT_C_FP, DEFAULT_C_FN, asymmetric_cost
 from src.model import AsymmetricModel, SymmetricModel
 from src.preprocessing import preprocess
@@ -131,7 +132,17 @@ def main() -> None:
         asym_proba=asym_proba,
     )
 
-    # Test split is never used for threshold tuning.
+    # The held-out split is used only for final evaluation and descriptive uncertainty.
+    test_indices = prepared["test_indices"]
+    calibration_evaluation = {
+        "brier_score_bootstrap": bootstrap_brier_interval(y_test, asym_proba),
+        "held_out_groups": grouped_calibration_report(
+            y_test,
+            asym_proba,
+            raw.iloc[test_indices]["Amount"].to_numpy(),
+            raw.iloc[test_indices]["Time"].to_numpy(),
+        ),
+    }
     results = {
         "metadata": {
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -145,15 +156,20 @@ def main() -> None:
             "false_positive_cost_assumption": args.c_fp,
             "false_negative_cost_assumption": args.c_fn,
             "cost_note": "Illustrative cost units, not validated banking loss estimates.",
+            "threshold_selection_method": asymmetric.threshold_selection_method,
             "feature_names": feature_names,
         },
         "symmetric_model": evaluate(symmetric, X_test, y_test, args.c_fp, args.c_fn),
         "asymmetric_model": evaluate(asymmetric, X_test, y_test, args.c_fp, args.c_fn),
+        "calibration_evaluation": calibration_evaluation,
     }
     plot_calibration_curve(y_test, asym_proba, os.path.join(output_dir, "plots", "calibration_curve.png"))
     metrics_path = os.path.join(output_dir, "model_comparison.json")
     with open(metrics_path, "w", encoding="utf-8") as file:
         json.dump(results, file, indent=2)
+    calibration_path = os.path.join(output_dir, "calibration_evaluation.json")
+    with open(calibration_path, "w", encoding="utf-8") as file:
+        json.dump(calibration_evaluation, file, indent=2)
 
     print("\n=== Held-out test results ===")
     for name in ("symmetric_model", "asymmetric_model"):

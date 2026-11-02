@@ -4,8 +4,8 @@ Data Preprocessing Pipeline — Kaggle Credit Card Fraud Dataset
 Handles feature engineering, scaling, and class imbalance via SMOTE.
 
 Dataset specifics:
-  - V1–V28: Already PCA-transformed and standardized by the data provider.
-             We do NOT re-scale these — they are already zero-mean, unit-variance.
+  - V1–V28: Already PCA-transformed by the data provider. The train-fitted StandardScaler
+             is also applied to these components, matching the model input pipeline.
   - Time:   Seconds since first transaction. Encodes time-of-day fraud patterns.
              We apply CYCLIC encoding (sin/cos) after converting to hour-of-day.
   - Amount: Raw amount in unspecified dataset units. Right-skewed → log1p transform applied.
@@ -13,8 +13,7 @@ Dataset specifics:
 
 Design Decisions:
   - SMOTE applied ONLY on training set (critical: never on test/val)
-  - V1–V28 passed through as-is (already standardized by PCA pipeline)
-  - StandardScaler is fitted on all engineered features using training data only
+  - StandardScaler is fitted on all engineered features, including V1–V28, using training data only
   - StandardScaler fitted on train only, applied to test (no leakage)
 """
 
@@ -27,7 +26,7 @@ import joblib
 import os
 import sys
 
-# V1–V28 pass through as-is (pre-standardized by PCA)
+# V1–V28 are PCA components; the train-only StandardScaler is applied to them below.
 V_COLS = [f"V{i}" for i in range(1, 29)]
 FEATURE_COLS = V_COLS + ["Amount_log", "Time_sin", "Time_cos"]
 TARGET_COL = "Class"
@@ -102,14 +101,15 @@ def preprocess(
 
     X = df[FEATURE_COLS].values
     y = df[TARGET_COL].values
+    row_indices = np.arange(len(df))
 
     # Stratified split — critical at 0.17% minority class
-    X_temp, X_test, y_temp, y_test = train_test_split(
-        X, y, test_size=test_size, stratify=y, random_state=random_state
+    X_temp, X_test, y_temp, y_test, rows_temp, test_indices = train_test_split(
+        X, y, row_indices, test_size=test_size, stratify=y, random_state=random_state
     )
     val_fraction = val_size / (1 - test_size)
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_temp, y_temp, test_size=val_fraction, stratify=y_temp,
+    X_train, X_val, y_train, y_val, train_indices, val_indices = train_test_split(
+        X_temp, y_temp, rows_temp, test_size=val_fraction, stratify=y_temp,
         random_state=random_state
     )
 
@@ -163,6 +163,9 @@ def preprocess(
         "class_counts": counts_before,
         "class_counts_after_resampling": counts_after,
         "scaler": scaler,
+        "train_indices": train_indices,
+        "validation_indices": val_indices,
+        "test_indices": test_indices,
     }
 
 

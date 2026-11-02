@@ -9,6 +9,7 @@ from typing import Optional
 import joblib
 import numpy as np
 import xgboost as xgb
+from sklearn.model_selection import StratifiedKFold
 
 from src.calibration import fit_platt_calibrator
 
@@ -51,7 +52,8 @@ class BaseFraudModel:
              "output_type": "probability" if isinstance(self, SymmetricModel) else "raw_margin",
              "calibrator": self.calibrator,
              "probability_calibrated": self.calibrator is not None,
-             "calibration_method": self.calibration_method},
+             "calibration_method": self.calibration_method,
+             "threshold_selection_method": getattr(self, "threshold_selection_method", None)},
             path,
         )
         print(f"[{self.__class__.__name__}] Saved to {path}")
@@ -139,9 +141,33 @@ class AsymmetricModel(BaseFraudModel):
         )
         self._evals_result = evals_result
         print(f"[AsymmetricModel] Best iteration: {self.model.best_iteration}")
-        self.calibrator = fit_platt_calibrator(self.predict_raw_score(X_val), y_val)
-        self.calibration_method = "Platt scaling fitted on validation raw margins"
-        self.tune_threshold(X_val, y_val, self.c_fp, self.c_fn)
+        y_val = np.asarray(y_val, dtype=int)
+        raw_val = np.asarray(self.predict_raw_score(X_val), dtype=float)
+        minority_count = int(np.bincount(y_val, minlength=2).min())
+        n_splits = min(5, minority_count)
+        if n_splits < 2:
+            raise ValueError("Cross-fitted calibration requires at least two validation examples per class.")
+
+        # Estimate threshold on out-of-fold calibrated validation scores. Each row is
+        # calibrated by a Platt model that did not see that row's label.
+        splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        oof_calibrated = np.empty(y_val.size, dtype=float)
+        for fit_idx, holdout_idx in splitter.split(raw_val.reshape(-1, 1), y_val):
+            fold_calibrator = fit_platt_calibrator(raw_val[fit_idx], y_val[fit_idx])
+            oof_calibrated[holdout_idx] = fold_calibrator.predict_proba(
+                raw_val[holdout_idx].reshape(-1, 1)
+            )[:, 1]
+        threshold, _, _, _ = optimal_threshold(y_val, oof_calibrated, self.c_fp, self.c_fn)
+        self.threshold = float(threshold)
+
+        # Refit the served calibrator on all validation rows after the cross-fitted
+        # threshold has been selected. The held-out test split remains untouched.
+        self.calibrator = fit_platt_calibrator(raw_val, y_val)
+        self.calibration_method = "Platt scaling fitted on full validation split"
+        self.threshold_selection_method = (
+            f"{n_splits}-fold cross-fitted Platt scores on validation split"
+        )
+        print(f"[AsymmetricModel] Cross-fitted validation threshold: {self.threshold:.3f}")
 
     def predict_raw_score(self, X):
         """Return raw XGBoost margins for calibration or diagnostics."""

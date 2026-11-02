@@ -138,6 +138,9 @@ def test_risk_score_distinguishes_local_and_global_explanations(client):
     assert "risk_tier" in data
     assert "local_shap_drivers" in data
     assert len(data["local_shap_drivers"]) > 0
+    assert "raw_margin_attribution" in data
+    assert "base_value_log_odds" in data["raw_margin_attribution"]
+    assert "threshold_used" in data
     if data["probability_calibrated"]:
         assert data["expected_exposure_amount_units"] == pytest.approx(data["fraud_probability"] * payload["Amount"], abs=0.01)
     else:
@@ -208,3 +211,48 @@ def test_validation_rejects_out_of_range_top_k(client):
     assert res.status_code == 422
     res2 = client.get("/features/global-importance?top_k=0")
     assert res2.status_code == 422
+
+
+def test_api_key_authentication_and_health_probe_exemption(client, monkeypatch):
+    monkeypatch.setenv("FRAUDSHIELD_API_KEY", "ci-only-test-key")
+    assert client.get("/model-info").status_code == 401
+    assert client.get("/model-info", headers={"X-API-Key": "wrong"}).status_code == 401
+    authorized = client.get("/model-info", headers={"X-API-Key": "ci-only-test-key"})
+    assert authorized.status_code == 200
+    assert client.get("/health/ready").status_code == 200
+
+
+def test_request_validation_response_does_not_echo_transaction_values(client):
+    payload = sample_transaction_payload(V1="PRIVATE-TRANSACTION-VALUE")
+    response = client.post("/predict", json=payload)
+    assert response.status_code == 422
+    assert "PRIVATE-TRANSACTION-VALUE" not in response.text
+    assert "input" not in response.json()
+
+
+def test_process_local_rate_limit_returns_retry_after(monkeypatch):
+    from fastapi import FastAPI
+    from src.api import APIProtectionMiddleware
+
+    monkeypatch.delenv("FRAUDSHIELD_API_KEY", raising=False)
+    monkeypatch.setenv("API_RATE_LIMIT_PER_MINUTE", "1")
+    isolated_app = FastAPI()
+    isolated_app.add_middleware(APIProtectionMiddleware)
+
+    @isolated_app.get("/probe")
+    def probe():
+        return {"ok": True}
+
+    with TestClient(isolated_app) as isolated_client:
+        assert isolated_client.get("/probe").status_code == 200
+        limited = isolated_client.get("/probe")
+    assert limited.status_code == 429
+    assert int(limited.headers["Retry-After"]) >= 1
+
+
+def test_production_mode_fails_closed_without_api_key(client, monkeypatch):
+    monkeypatch.setenv("FRAUDSHIELD_ENV", "production")
+    monkeypatch.delenv("FRAUDSHIELD_API_KEY", raising=False)
+    assert client.get("/health").json()["status"] == "degraded"
+    assert client.get("/health/ready").status_code == 503
+    assert client.get("/model-info").status_code == 503

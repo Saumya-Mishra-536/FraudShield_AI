@@ -7,6 +7,7 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,13 +16,70 @@ jobs:
           cache: "pip"
       - name: Install pinned dependencies
         run: python -m pip install -r requirements.txt
-      - name: Verify committed model and evaluation artifacts
+      - name: Train models and fit cross-fitted validation threshold
+        run: python -m src.train
+      - name: Generate full evaluation plots from freshly trained artifacts
+        run: python -m src.evaluate
+      - name: Verify freshly generated model, calibration, and plot artifacts
         run: |
-          test -f models/asymmetric_model.pkl
-          test -f models/scaler.pkl
-          test -f outputs/model_comparison.json
-          test -f outputs/test_predictions.npz
-      - name: Run real-artifact integration tests
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import joblib
+          import numpy as np
+
+          root = Path(".")
+          required = [
+              "models/asymmetric_model.pkl",
+              "models/symmetric_model.pkl",
+              "models/scaler.pkl",
+              "outputs/model_comparison.json",
+              "outputs/test_predictions.npz",
+              "outputs/calibration_evaluation.json",
+              "outputs/plots/calibration_curve.png",
+              "outputs/plots/confusion_matrix_comparison.png",
+              "outputs/plots/prospect_theory_curve.png",
+              "outputs/plots/roc_pr_curves.png",
+              "outputs/plots/shap_bar.png",
+              "outputs/plots/shap_summary.png",
+              "outputs/plots/threshold_tuning.png",
+          ]
+          missing = [path for path in required if not (root / path).is_file()]
+          if missing:
+              raise SystemExit(f"Missing generated artifacts: {missing}")
+          tiny = [path for path in required if path.endswith(".png") and (root / path).stat().st_size < 1000]
+          if tiny:
+              raise SystemExit(f"Generated plots are empty or unexpectedly small: {tiny}")
+
+          bundle = joblib.load(root / "models/asymmetric_model.pkl")
+          if bundle.get("calibrator") is None or not bundle.get("probability_calibrated"):
+              raise SystemExit("Fresh asymmetric model is missing its fitted calibrator.")
+          if "cross-fitted" not in bundle.get("threshold_selection_method", ""):
+              raise SystemExit("Threshold selection was not cross-fitted.")
+
+          with (root / "outputs/model_comparison.json").open(encoding="utf-8") as file:
+              metrics = json.load(file)
+          if not metrics["asymmetric_model"].get("probability_calibrated"):
+              raise SystemExit("Fresh evaluation metrics do not mark the asymmetric score calibrated.")
+          if "calibration_evaluation" not in metrics:
+              raise SystemExit("Model comparison is missing calibration evaluation.")
+
+          with (root / "outputs/calibration_evaluation.json").open(encoding="utf-8") as file:
+              report = json.load(file)
+          interval = report["brier_score_bootstrap"]
+          if not interval["lower_95"] <= interval["estimate"] <= interval["upper_95"]:
+              raise SystemExit("Bootstrap Brier interval is malformed.")
+          if set(report["held_out_groups"]["amount_tertiles"]) != {"low", "middle", "high"}:
+              raise SystemExit("Amount subgroup calibration output is incomplete.")
+          if set(report["held_out_groups"]["dataset_time_halves"]) != {"earlier", "later"}:
+              raise SystemExit("Time subgroup calibration output is incomplete.")
+
+          predictions = np.load(root / "outputs/test_predictions.npz")
+          if predictions["y_test"].size == 0 or not np.isfinite(predictions["asym_proba"]).all():
+              raise SystemExit("Fresh held-out predictions are empty or non-finite.")
+          print("Verified fresh training, calibration, held-out evaluation, and all plots.")
+          PY
+      - name: Run integration tests against freshly generated artifacts
         run: pytest tests/test_integration.py -v
       - name: Run remaining test suite
         run: pytest tests/ -v --ignore=tests/test_integration.py

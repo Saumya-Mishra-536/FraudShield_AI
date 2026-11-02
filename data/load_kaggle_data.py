@@ -5,6 +5,9 @@ Dataset: Credit Card Fraud Detection — MLG-ULB (Université Libre de Bruxelles
 Source: https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud
 """
 import os
+import warnings
+
+import numpy as np
 import pandas as pd
 
 EXPECTED_ROWS = 284807
@@ -27,10 +30,56 @@ def load_and_validate(path: str) -> pd.DataFrame:
             f"Dataset contains {null_count} missing values. "
             "Resolve missing values explicitly before training."
         )
+
+    non_numeric = [
+        column for column in expected_cols
+        if not pd.api.types.is_numeric_dtype(df[column].dtype)
+        or pd.api.types.is_bool_dtype(df[column].dtype)
+    ]
+    if non_numeric:
+        raise ValueError(f"Expected numeric values in columns: {non_numeric}")
+
+    numeric_values = df[expected_cols].to_numpy(dtype=float)
+    if not np.isfinite(numeric_values).all():
+        bad_columns = [
+            column for column in expected_cols
+            if not np.isfinite(df[column].to_numpy(dtype=float)).all()
+        ]
+        raise ValueError(f"Dataset contains infinite or non-finite values in columns: {bad_columns}")
+
     if not df["Class"].isin([0, 1]).all():
         raise ValueError("Class must contain only binary labels 0 and 1.")
     if (df["Amount"] < 0).any():
         raise ValueError("Amount contains negative values.")
+    if (df["Time"] < 0).any():
+        raise ValueError("Time contains negative values.")
+
+    pca_cols = [f"V{i}" for i in range(1, 29)]
+    shifted_features = []
+    for column in pca_cols:
+        if float(df[column].abs().quantile(0.999)) > 100:
+            shifted_features.append(column)
+        if int(df[column].nunique(dropna=False)) <= 1:
+            shifted_features.append(f"{column} (constant)")
+    if shifted_features:
+        warnings.warn(
+            "PCA feature distribution is unusual for the reference dataset in: "
+            + ", ".join(shifted_features),
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if float(df["Time"].max()) > 172_800:
+        warnings.warn(
+            "Time exceeds the roughly 48-hour span of the reference dataset; review the feature time basis.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if float(df["Amount"].max()) > 1_000_000:
+        warnings.warn(
+            "Amount has an unusually large maximum for the reference dataset; review units and input distribution.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     fraud_count = int(df["Class"].sum())
     print(f"[Loader] Loaded {len(df):,} transactions")

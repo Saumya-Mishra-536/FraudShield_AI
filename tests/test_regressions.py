@@ -10,7 +10,7 @@ from src.loss_functions import xgboost_asymmetric_objective
 def make_dataset(rows=12):
     data = {"Time": np.arange(rows, dtype=float), "Amount": np.arange(rows, dtype=float)}
     for i in range(1, 29):
-        data[f"V{i}"] = np.zeros(rows, dtype=float)
+        data[f"V{i}"] = np.arange(rows, dtype=float) * (i / 100.0)
     data["Class"] = np.array([0, 1] * (rows // 2), dtype=int)
     return pd.DataFrame(data)
 
@@ -52,3 +52,41 @@ def test_asymmetric_objective_returns_finite_gradient_and_hessian():
     assert (hess > 0).all()
     assert grad.shape == labels.shape
     assert hess.shape == labels.shape
+
+
+
+def test_loader_rejects_infinite_numeric_values(tmp_path):
+    path = tmp_path / "infinite.csv"
+    df = make_dataset()
+    df.loc[0, "V3"] = np.inf
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="non-finite"):
+        load_and_validate(str(path))
+
+
+def test_loader_rejects_nonnumeric_feature_column(tmp_path):
+    path = tmp_path / "nonnumeric.csv"
+    df = make_dataset()
+    df["V6"] = df["V6"].astype(object)
+    df.loc[0, "V6"] = "not-a-number"
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="numeric values"):
+        load_and_validate(str(path))
+
+
+def test_loader_rejects_negative_time(tmp_path):
+    path = tmp_path / "negative-time.csv"
+    df = make_dataset()
+    df.loc[0, "Time"] = -1
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="Time contains negative"):
+        load_and_validate(str(path))
+
+
+def test_loader_warns_on_unexpected_pca_feature_distribution(tmp_path):
+    path = tmp_path / "shifted.csv"
+    df = make_dataset()
+    df.loc[0, "V4"] = 2_000
+    df.to_csv(path, index=False)
+    with pytest.warns(RuntimeWarning, match="PCA feature distribution"):
+        load_and_validate(str(path))
