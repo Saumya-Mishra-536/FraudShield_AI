@@ -72,28 +72,28 @@ flowchart LR
 
 ## 📊 Audited Test Results (Held-Out Test Set: 56,962 Transactions)
 
-The table below reflects the currently committed model artifact bundle. CI now trains with the cross-fitted calibration and threshold-selection strategy described above; use the **Refresh calibrated artifacts** workflow to replace this snapshot with metrics from the updated training code. Costs use the illustrative $5/$20 assumptions.
+These metrics come from the refreshed artifact bundle generated on 2026-11-02 with the cross-fitted calibration and threshold-selection strategy. The push-triggered CI workflow independently reproduces model training and evaluation. Costs use the illustrative $5/$20 assumptions.
 
 Reported on the untouched held-out test split after model, calibration, and threshold selection using validation data ($C_{FP} = \$5.00, C_{FN} = \$20.00$):
 
 | Metric | Symmetric XGBoost (Baseline) | Asymmetric XGBoost (Cost-Sensitive) | Operational Impact |
 | :--- | :---: | :---: | :--- |
-| **Validation-selected Threshold ($\tau$)** | `0.5966` | `0.0483` | Selected separately on validation scores; asymmetric score is Platt-calibrated |
-| **Precision** | `72.92%` | **`79.25%`** | Higher precision at the selected cost operating point |
+| **Validation-selected Threshold ($\tau$)** | `0.5966` | `0.0492` | Asymmetric threshold selected from five-fold out-of-fold Platt scores |
+| **Precision** | `72.92%` | **`80.00%`** | Higher precision at the selected cost operating point |
 | **Recall (Fraud Caught Rate)** | `71.43%` | **`85.71%`** | Asymmetric catches 84 / 98 frauds |
-| **F1 Score** | `0.7216` | **`0.8235`** | Higher held-out F1 |
+| **F1 Score** | `0.7216` | **`0.8276`** | Higher held-out F1 |
 | **ROC-AUC** | `0.9603` | **`0.9763`** | Stronger ranking on this split |
 | **PR-AUC (Avg Precision)** | `0.6880` | **`0.8686`** | Higher precision-recall area |
-| **Brier Score** | `0.15559` | **`0.00041`** | Asymmetric score calibrated with Platt scaling |
+| **Brier Score** | `0.15559` | **`0.00041`** | Asymmetric score; bootstrap 95% interval: `[0.000256, 0.000577]` |
 | **True Positives ($TP$)** | `70` | **`84`** | 14 additional frauds caught |
-| **False Positives ($FP$)** | `26` | **`22`** | 4 fewer false alerts |
+| **False Positives ($FP$)** | `26` | **`21`** | 5 fewer false alerts |
 | **False Negatives ($FN$)** | `28` | **`14`** | 14 fewer missed frauds |
-| **Total Asymmetric Cost** | `$690.00` | **`$390.00`** | 43.5% lower cost under illustrative weights |
-| **Cost per Transaction** | `$0.01211` | **`$0.00685`** | Lower cost on this test split |
+| **Total Asymmetric Cost** | `$690.00` | **`$385.00`** | 44.2% lower cost under illustrative weights |
+| **Cost per Transaction** | `$0.01211` | **`$0.00676`** | Lower cost on this test split |
 
 ### Key Takeaways
-1. **More Fraud Captured at Fewer False Alerts**: At validation-selected thresholds, the asymmetric model caught 84 fraud cases vs 70 and produced 22 false positives vs 26 on this held-out split.
-2. **Lower Illustrative Cost**: Under the project's assumed $5 false-positive and $20 false-negative costs, the test split cost was $390 vs $690. These are illustrative units, not measured bank losses.
+1. **More Fraud Captured at Fewer False Alerts**: At validation-selected thresholds, the asymmetric model caught 84 fraud cases vs 70 and produced 21 false positives vs 26 on this held-out split.
+2. **Lower Illustrative Cost**: Under the project's assumed $5 false-positive and $20 false-negative costs, the test split cost was $385 vs $690. These are illustrative units, not measured bank losses.
 3. **Calibrated Scores**: The asymmetric raw margins were calibrated with Platt scaling fitted on validation data. Its Brier score and reliability curve describe the held-out test split; they do not guarantee calibration after deployment or drift.
 
 ---
@@ -118,7 +118,7 @@ XGBoost optimizes leaf weights using second-order Newton-Raphson boosting. We de
 ### 3. Bayes Optimal Decision Threshold
 Under asymmetric costs, the decision rule that minimizes expected loss is:
 $$\tau^* = \frac{C_{FP}}{C_{FP} + C_{FN}} = \frac{5}{5 + 20} = 0.200$$
-The validation search selected $\tau = 0.0483$ after Platt calibration. This empirical threshold is specific to this model, split, and illustrative cost assumptions; the theoretical threshold is only a reference under calibrated posterior and cost assumptions.
+The cross-fitted validation search selected $\tau = 0.0492$. This empirical threshold is specific to this model, split, and illustrative cost assumptions; the theoretical threshold is only a reference under calibrated posterior and cost assumptions.
 
 ---
 
@@ -147,7 +147,7 @@ FraudShield AI strictly separates **local transaction explanations** from **glob
 
 ## 🚀 Quickstart & Setup
 
-The dashboard currently performs inference locally in the Streamlit process using the saved XGBoost model and scaler; it does not call the FastAPI service.
+The dashboard uses saved local artifacts for comparison and historical simulation. For live transaction scoring, set `FRAUDSHIELD_API_URL` to route requests through FastAPI; Docker Compose configures this service connection by default.
 
 ### 1. Installation
 Requires Python 3.12. CI installs the pinned versions in `requirements.txt`, downloads the repository dataset, trains fresh models, regenerates evaluation artifacts, and then runs integration tests.

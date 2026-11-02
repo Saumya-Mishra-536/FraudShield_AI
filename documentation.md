@@ -52,7 +52,7 @@ Example response shape from the refreshed artifact (values are illustrative):
   "is_fraud": false,
   "decision": "CHALLENGE",
   "risk_tier": "MEDIUM",
-  "threshold_used": 0.0483,
+  "threshold_used": 0.0492,
   "model_version": "asymmetric-v1.1"
 }
 ```
