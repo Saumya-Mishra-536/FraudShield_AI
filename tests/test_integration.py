@@ -192,3 +192,33 @@ def test_fresh_calibration_report_and_cross_fitted_threshold_artifact():
     bundle = joblib.load(bundle_path)
     assert bundle["calibrator"] is not None
     assert "cross-fitted" in bundle["threshold_selection_method"]
+
+
+
+def test_temporal_holdout_metrics_use_disjoint_later_windows():
+    """A separate report evaluates the last chronological segment of the source dataset."""
+    metrics_path = os.path.join(ROOT, "outputs", "time_holdout", "model_comparison.json")
+    calibration_path = os.path.join(ROOT, "outputs", "time_holdout", "calibration_evaluation.json")
+    for path in (metrics_path, calibration_path):
+        if not os.path.isfile(path):
+            pytest.fail(f"Required forward-time artifact is missing: {path}", pytrace=False)
+
+    with open(metrics_path, "r", encoding="utf-8") as file:
+        metrics = json.load(file)
+    metadata = metrics["metadata"]
+    assert metadata["split_strategy"] == "temporal"
+    ranges = metadata["split_time_ranges"]
+    assert ranges["train"]["end_seconds"] < ranges["validation"]["start_seconds"]
+    assert ranges["validation"]["end_seconds"] < ranges["test"]["start_seconds"]
+    counts = metadata["split_class_counts"]
+    assert counts["train"]["1"] > 0
+    assert counts["validation"]["1"] > 0
+    assert counts["test"]["1"] > 0
+
+    with open(calibration_path, "r", encoding="utf-8") as file:
+        report = json.load(file)
+    interval = report["brier_score_bootstrap"]
+    assert interval["lower_95"] <= interval["estimate"] <= interval["upper_95"]
+    assert "chronological holdout" in interval["note"]
+    assert "same 48-hour source dataset" in report["held_out_groups"]["grouping_note"]
+    assert "test_window_time_halves" in report["held_out_groups"]

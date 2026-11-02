@@ -176,10 +176,13 @@ Optional arguments:
 ```bash
 python3 -m src.train --c-fp 5.0 --c-fn 20.0 --seed 42 --test-size 0.20 --val-size 0.10
 python3 -m src.train --use-smote   # Apply SMOTE to training split only
+python3 -m src.train --split-strategy temporal  # Chronological 70/10/20 windows
 ```
 
+The temporal run writes separate outputs and models under `outputs/time_holdout/` and `models/time_holdout/`; it does not replace the primary random-split bundle.
+
 ### 3. Run the Full Test Suite
-CI retrains from the repository dataset, regenerates every evaluation plot and calibration artifact, verifies the fresh outputs, and runs real-artifact integration tests followed by the remaining suite under Python 3.12 with pinned dependencies:
+CI retrains from the repository dataset, regenerates every primary evaluation plot and calibration artifact, runs a separate chronological holdout, verifies both reports, and runs real-artifact integration tests followed by the remaining suite under Python 3.12 with pinned dependencies:
 
 ```bash
 pytest tests/ -v
@@ -187,7 +190,7 @@ pytest tests/ -v
 
 ### Probability calibration and score interpretation
 
-The asymmetric model uses a custom weighted logistic objective, so its raw sigmoid score is a ranking/risk score, not automatically a posterior probability. Training selects its operating threshold from five-fold out-of-fold Platt calibrated validation scores, then fits the served Platt calibrator on the full validation split. The held-out test split is not used for either choice. Evaluation reports a bootstrap 95% interval for Brier score, amount- and time-sliced descriptive calibration summaries, and a reliability curve at `outputs/plots/calibration_curve.png`. These intervals quantify sampling uncertainty on this random split; the time groups are not a later-period test. The API includes `probability_calibrated` and `score_semantics`; expected exposure is returned only for calibrated output. Set `FRAUDSHIELD_API_URL` and `FRAUDSHIELD_API_KEY` on the dashboard server to connect live scoring to a protected API. Docker Compose provides this internal connection by default.
+The asymmetric model uses a custom weighted logistic objective, so its raw sigmoid score is a ranking/risk score, not automatically a posterior probability. Training selects its operating threshold from five-fold out-of-fold Platt calibrated validation scores, then fits the served Platt calibrator on the full validation split. The held-out test split is not used for either choice. The primary random-split evaluation reports a bootstrap 95% Brier interval, amount/time slices, and a reliability curve. A separate chronological run reports metrics on the final 20% time window after earlier training and validation windows in `outputs/time_holdout/`. Its time-series scope is still limited to this source dataset's roughly 48 hours; it does not establish performance on a newer calendar period or another dataset. The API includes `probability_calibrated` and `score_semantics`; expected exposure is returned only for calibrated output. Set `FRAUDSHIELD_API_URL` and `FRAUDSHIELD_API_KEY` on the dashboard server to connect live scoring to a protected API. Docker Compose provides this internal connection by default.
 
 ### 4. Launch the Interactive Dashboard
 Opens the Streamlit operations and simulation interface:
@@ -245,8 +248,9 @@ FraudShield_AI/
 │   ├── symmetric_model.pkl
 │   └── scaler.pkl
 ├── outputs/                     # Persisted evaluation artifacts & figures
-│   ├── model_comparison.json   # Held-out test metrics and calibration report
+│   ├── model_comparison.json   # Random-split held-out metrics
 │   ├── calibration_evaluation.json # Bootstrap interval and group summaries
+│   ├── time_holdout/            # Chronological later-window evaluation report
 │   └── plots/
 │       ├── calibration_curve.png       # Held-out reliability curve
 │       ├── confusion_matrix_comparison.png
@@ -302,8 +306,8 @@ FraudShield_AI/
 3. **Cost Parameter Calibration**: Cost assumptions ($C_{FP} = \$5, C_{FN} = \$20$) vary by card product, interchange tier, and legal jurisdiction. Banks must calibrate these using empirical chargeback accounting and customer churn studies.
 4. **False Positive Harm**: False declines disproportionately impact legitimate customers traveling or making atypical purchases. Step-up authentication (`CHALLENGE`) is recommended over immediate hard blocks.
 5. **Adversarial Drift**: Fraudsters adapt behaviors when detection boundaries become apparent. Periodic retraining, concept drift monitoring, and shadow-mode evaluation are required before production promotion.
-6. **Random Split and Temporal Leakage**: The code uses stratified random splits, not a forward-in-time validation design. The source data covers roughly two days, so nearby transactions and repeated cardholder behavior can appear across splits. Reported results do not establish future-period performance.
-7. **Calibration Is Not Permanent**: A cross-fitted validation strategy reduces the reuse of the same validation labels for Platt calibration and threshold selection, and the final calibrator is refitted on the full validation split. Bootstrap Brier intervals and amount/time group summaries describe uncertainty on the held-out random split only. The dataset spans about 48 hours and the time groups are not a later-period evaluation; the small fraud count still makes subgroup estimates noisy. Evaluation on a later period or independent dataset remains outstanding.
+6. **Random Split and Temporal Leakage**: The primary model artifact and headline table use stratified random splits, so nearby transactions and repeated cardholder behavior can appear across splits. CI also runs a separate chronological 70/10/20 holdout, fitting on the earliest rows by Time, selecting calibration and threshold on the next window, and evaluating on the latest window. This is a later segment within the same roughly 48-hour historical source, not independent future data; it cannot establish deployment-period performance.
+7. **Calibration Is Not Permanent**: A cross-fitted validation strategy reduces reuse of validation labels for Platt calibration and threshold selection, and the final calibrator is refitted on the full validation split. Bootstrap Brier intervals and amount/time group summaries are reported for both the random-split test and the chronological holdout. The chronological evaluation still comes from the same 48-hour Kaggle source; testing a genuinely newer period or independent dataset remains outstanding. The small fraud count makes subgroup estimates noisy.
 8. **Exposure Is Only a Proxy**: When calibrated probabilities are available, probability multiplied by transaction Amount is an exposure proxy. It is not expected chargeback loss because realized loss, recoveries, fees, and customer impact are not modeled.
 9. **No Demographic Fairness Audit**: PCA-anonymized fields do not provide enough information to test disparate impact across protected or vulnerable groups.
 

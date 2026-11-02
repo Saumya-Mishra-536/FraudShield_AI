@@ -20,6 +20,8 @@ jobs:
         run: python -m src.train
       - name: Generate full evaluation plots from freshly trained artifacts
         run: python -m src.evaluate
+      - name: Evaluate a chronological later-time holdout
+        run: python -m src.train --split-strategy temporal
       - name: Verify freshly generated model, calibration, and plot artifacts
         run: |
           python - <<'PY'
@@ -36,6 +38,10 @@ jobs:
               "outputs/model_comparison.json",
               "outputs/test_predictions.npz",
               "outputs/calibration_evaluation.json",
+              "outputs/time_holdout/model_comparison.json",
+              "outputs/time_holdout/calibration_evaluation.json",
+              "outputs/time_holdout/plots/calibration_curve.png",
+              "models/time_holdout/asymmetric_model.pkl",
               "outputs/plots/calibration_curve.png",
               "outputs/plots/confusion_matrix_comparison.png",
               "outputs/plots/prospect_theory_curve.png",
@@ -63,6 +69,25 @@ jobs:
               raise SystemExit("Fresh evaluation metrics do not mark the asymmetric score calibrated.")
           if "calibration_evaluation" not in metrics:
               raise SystemExit("Model comparison is missing calibration evaluation.")
+
+          with (root / "outputs/time_holdout/model_comparison.json").open(encoding="utf-8") as file:
+              temporal_metrics = json.load(file)
+          temporal_meta = temporal_metrics["metadata"]
+          if temporal_meta["split_strategy"] != "temporal":
+              raise SystemExit("Forward-time evaluation did not use chronological windows.")
+          windows = temporal_meta["split_time_ranges"]
+          if not windows["train"]["end_seconds"] < windows["validation"]["start_seconds"]:
+              raise SystemExit("Temporal train and validation windows overlap.")
+          if not windows["validation"]["end_seconds"] < windows["test"]["start_seconds"]:
+              raise SystemExit("Temporal validation and test windows overlap.")
+          if temporal_meta["split_class_counts"]["test"].get("1", 0) <= 0:
+              raise SystemExit("Temporal test window has no fraud examples.")
+
+          with (root / "outputs/time_holdout/calibration_evaluation.json").open(encoding="utf-8") as file:
+              temporal_report = json.load(file)
+          temporal_interval = temporal_report["brier_score_bootstrap"]
+          if not temporal_interval["lower_95"] <= temporal_interval["estimate"] <= temporal_interval["upper_95"]:
+              raise SystemExit("Temporal bootstrap Brier interval is malformed.")
 
           with (root / "outputs/calibration_evaluation.json").open(encoding="utf-8") as file:
               report = json.load(file)

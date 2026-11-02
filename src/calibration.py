@@ -27,6 +27,7 @@ def bootstrap_brier_interval(
     *,
     n_bootstrap: int = 500,
     random_state: int = 42,
+    split_strategy: str = "random",
 ) -> dict:
     """Return a percentile 95% bootstrap interval for held-out Brier score."""
     y = np.asarray(y_true, dtype=int).reshape(-1)
@@ -51,7 +52,12 @@ def bootstrap_brier_interval(
         "estimate": float(np.mean((p - y) ** 2)),
         "lower_95": float(np.quantile(estimates, 0.025)),
         "upper_95": float(np.quantile(estimates, 0.975)),
-        "note": "Sampling uncertainty on this held-out random split; not a future-period guarantee.",
+        "note": (
+            "Sampling uncertainty on this chronological holdout within the same 48-hour dataset; "
+            "not an independent future-period guarantee."
+            if split_strategy == "temporal"
+            else "Sampling uncertainty on this held-out random split; not a future-period guarantee."
+        ),
     }
 
 
@@ -70,6 +76,8 @@ def grouped_calibration_report(
     probabilities: np.ndarray,
     amount: np.ndarray,
     time_seconds: np.ndarray,
+    *,
+    split_strategy: str = "random",
 ) -> dict:
     """Summarize held-out calibration by amount tertiles and dataset-time halves."""
     y = np.asarray(y_true, dtype=int).reshape(-1)
@@ -82,9 +90,10 @@ def grouped_calibration_report(
         raise ValueError("probabilities and grouping values must be finite")
 
     report = {}
+    time_group_name = "test_window_time_halves" if split_strategy == "temporal" else "dataset_time_halves"
     for name, values, labels, quantiles in (
         ("amount_tertiles", amount, ("low", "middle", "high"), (1 / 3, 2 / 3)),
-        ("dataset_time_halves", time_seconds, ("earlier", "later"), (0.5,)),
+        (time_group_name, time_seconds, ("earlier", "later"), (0.5,)),
     ):
         boundaries = np.unique(np.quantile(values, quantiles))
         codes = np.digitize(values, boundaries, right=True)
@@ -93,12 +102,12 @@ def grouped_calibration_report(
             mask = codes == code
             if mask.any():
                 report[name][label] = _calibration_group_summary(y[mask], p[mask])
-    return {
-        "grouping_note": (
-            "Descriptive slices from the same held-out random split. Time halves are not an out-of-time test."
-        ),
-        **report,
-    }
+    grouping_note = (
+        "Slices within the chronological held-out test window. These are descriptive groups from the same 48-hour source dataset."
+        if split_strategy == "temporal"
+        else "Descriptive slices from the same held-out random split. Time halves are not an out-of-time test."
+    )
+    return {"grouping_note": grouping_note, **report}
 
 
 def model_output_to_score(raw_value: float, output_type: str = "raw_margin",

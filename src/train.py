@@ -85,6 +85,12 @@ def main() -> None:
     parser.add_argument("--c-fn", type=float, default=DEFAULT_C_FN)
     parser.add_argument("--use-smote", action="store_true",
                         help="Apply SMOTE to the training split only.")
+    parser.add_argument(
+        "--split-strategy",
+        choices=("random", "temporal"),
+        default="random",
+        help="Use a stratified random split or chronological train/validation/test windows.",
+    )
     args = parser.parse_args()
 
     if args.c_fp <= 0 or args.c_fn <= 0:
@@ -92,8 +98,12 @@ def main() -> None:
     if not 0 < args.test_size < 1 or not 0 < args.val_size < 1 - args.test_size:
         parser.error("Require 0 < test-size < 1 and 0 < val-size < 1 - test-size.")
 
-    model_dir = os.path.join(ROOT, "models")
-    output_dir = os.path.join(ROOT, "outputs")
+    if args.split_strategy == "temporal":
+        model_dir = os.path.join(ROOT, "models", "time_holdout")
+        output_dir = os.path.join(ROOT, "outputs", "time_holdout")
+    else:
+        model_dir = os.path.join(ROOT, "models")
+        output_dir = os.path.join(ROOT, "outputs")
     os.makedirs(model_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -102,11 +112,21 @@ def main() -> None:
         raw, test_size=args.test_size, val_size=args.val_size,
         apply_smote=args.use_smote, random_state=args.seed,
         scaler_path=os.path.join(model_dir, "scaler.pkl"),
+        split_strategy=args.split_strategy,
     )
     X_train, y_train = prepared["X_train"], prepared["y_train"]
     X_val, y_val = prepared["X_val"], prepared["y_val"]
     X_test, y_test = prepared["X_test"], prepared["y_test"]
     class_counts = {int(k): int(v) for k, v in zip(*np.unique(y_train, return_counts=True))}
+    split_class_counts = {
+        split_name: {
+            int(label): int(count)
+            for label, count in zip(*np.unique(labels, return_counts=True))
+        }
+        for split_name, labels in (
+            ("train", y_train), ("validation", y_val), ("test", y_test)
+        )
+    }
     feature_names = prepared["feature_names"]
 
     print("\n[Train] Training symmetric baseline...")
@@ -134,13 +154,30 @@ def main() -> None:
 
     # The held-out split is used only for final evaluation and descriptive uncertainty.
     test_indices = prepared["test_indices"]
+    if args.split_strategy == "temporal":
+        split_time_ranges = {
+            split_name: {
+                "start_seconds": float(raw.iloc[indices]["Time"].min()),
+                "end_seconds": float(raw.iloc[indices]["Time"].max()),
+            }
+            for split_name, indices in (
+                ("train", prepared["train_indices"]),
+                ("validation", prepared["validation_indices"]),
+                ("test", test_indices),
+            )
+        }
+    else:
+        split_time_ranges = None
     calibration_evaluation = {
-        "brier_score_bootstrap": bootstrap_brier_interval(y_test, asym_proba),
+        "brier_score_bootstrap": bootstrap_brier_interval(
+            y_test, asym_proba, split_strategy=args.split_strategy
+        ),
         "held_out_groups": grouped_calibration_report(
             y_test,
             asym_proba,
             raw.iloc[test_indices]["Amount"].to_numpy(),
             raw.iloc[test_indices]["Time"].to_numpy(),
+            split_strategy=args.split_strategy,
         ),
     }
     results = {
@@ -152,6 +189,9 @@ def main() -> None:
             "random_seed": args.seed,
             "test_size": args.test_size,
             "validation_size": args.val_size,
+            "split_strategy": args.split_strategy,
+            "split_time_ranges": split_time_ranges,
+            "split_class_counts": split_class_counts,
             "smote_enabled": bool(args.use_smote),
             "false_positive_cost_assumption": args.c_fp,
             "false_negative_cost_assumption": args.c_fn,
@@ -177,7 +217,7 @@ def main() -> None:
         for key, value in results[name].items():
             print(f"  {key}: {value:.6f}" if isinstance(value, float) else f"  {key}: {value}")
     print(f"\n[Train] Metrics written to {metrics_path}")
-    print("[Train] Models and scaler saved under models/.")
+    print(f"[Train] Models and scaler saved under {model_dir}.")
 
 
 if __name__ == "__main__":

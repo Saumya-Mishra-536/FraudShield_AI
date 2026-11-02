@@ -67,11 +67,11 @@ Send the same JSON to `POST /risk-score`. It includes SHAP explanations and glob
 
 The asymmetric model selects its operating threshold using five-fold out-of-fold Platt calibrated validation scores, then refits the served Platt calibrator on all validation rows. Held-out test data is used only for evaluation. Training writes a bootstrap 95% Brier interval and amount/time subgroup summaries to `outputs/calibration_evaluation.json`, alongside the reliability curve at `outputs/plots/calibration_curve.png`. The bootstrap and slices quantify uncertainty on the same random test split; they do not substitute for later-time or independent-dataset evaluation.
 
-Run the **Refresh calibrated artifacts** workflow manually from GitHub Actions to regenerate and commit model, scaler, evaluation, and calibration artifacts. The workflow verifies generated artifacts and runs integration tests before committing them. Until that workflow completes, older artifacts remain marked uncalibrated.
+Run the **Refresh calibrated artifacts** workflow manually from GitHub Actions to regenerate and commit the primary model, scaler, evaluation, and calibration artifacts. CI also trains a separate chronological 70/10/20 evaluation and verifies that the final test window follows the training and validation windows in Time. Its report is stored under `outputs/time_holdout/`; it covers a later segment of the same 48-hour dataset, not a newer independent dataset.
 
 ## Research limitations
 
-- This repository uses stratified random splitting rather than forward-in-time evaluation. The dataset spans about 48 hours, so performance may be optimistic for future periods.
+- The primary metrics use stratified random splitting. A separate chronological holdout trains on the earliest 70%, uses the next 10% for calibration and threshold selection, and evaluates the latest 20%; this is still only a segment of the same roughly 48-hour dataset, not an independent future period.
 - The dataset is highly imbalanced and contains few fraud examples; precision, recall, and calibration estimates have substantial sampling uncertainty.
 - The $5 false-positive and $20 false-negative costs are illustrative. They are not derived from observed issuer loss, recoveries, investigation, customer churn, or jurisdiction-specific fees.
 - Probability times transaction Amount is only an exposure proxy. It does not estimate net chargeback loss or account for recoveries and operational costs.

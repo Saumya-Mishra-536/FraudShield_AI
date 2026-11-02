@@ -22,6 +22,8 @@ jobs:
         run: python -m src.train
       - name: Regenerate evaluation plots from saved model artifacts
         run: python -m src.evaluate
+      - name: Generate forward-time holdout evaluation
+        run: python -m src.train --split-strategy temporal
       - name: Verify model and evaluation outputs
         run: |
           test -f models/asymmetric_model.pkl
@@ -29,6 +31,9 @@ jobs:
           test -f outputs/model_comparison.json
           test -f outputs/test_predictions.npz
           test -f outputs/calibration_evaluation.json
+          test -f outputs/time_holdout/model_comparison.json
+          test -f outputs/time_holdout/calibration_evaluation.json
+          test -f outputs/time_holdout/plots/calibration_curve.png
           test -f outputs/plots/calibration_curve.png
           test -f outputs/plots/confusion_matrix_comparison.png
           test -f outputs/plots/roc_pr_curves.png
@@ -44,7 +49,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add models/asymmetric_model.pkl models/symmetric_model.pkl models/scaler.pkl outputs/model_comparison.json outputs/calibration_evaluation.json outputs/test_predictions.npz outputs/plots/calibration_curve.png outputs/plots/confusion_matrix_comparison.png outputs/plots/prospect_theory_curve.png outputs/plots/roc_pr_curves.png outputs/plots/shap_bar.png outputs/plots/shap_summary.png outputs/plots/threshold_tuning.png
+          git add models/asymmetric_model.pkl models/symmetric_model.pkl models/scaler.pkl outputs/model_comparison.json outputs/calibration_evaluation.json outputs/time_holdout/model_comparison.json outputs/time_holdout/calibration_evaluation.json outputs/time_holdout/plots/calibration_curve.png outputs/test_predictions.npz outputs/plots/calibration_curve.png outputs/plots/confusion_matrix_comparison.png outputs/plots/prospect_theory_curve.png outputs/plots/roc_pr_curves.png outputs/plots/shap_bar.png outputs/plots/shap_summary.png outputs/plots/threshold_tuning.png
           if git diff --cached --quiet; then
             echo "No regenerated artifacts changed."
           else

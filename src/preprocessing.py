@@ -74,6 +74,7 @@ def preprocess(
     smote_ratio: float = 0.1,
     random_state: int = 42,
     scaler_path: str = None,
+    split_strategy: str = "random",
 ) -> dict:
     """
     Full preprocessing pipeline: engineer → split → scale → balance.
@@ -92,26 +93,52 @@ def preprocess(
         smote_ratio: Target minority:majority ratio after SMOTE
         random_state: Reproducibility seed
         scaler_path: If provided, saves fitted scaler to this path
+        split_strategy: "random" stratified split or chronological "temporal" split
 
     Returns:
         dict with keys: X_train, X_val, X_test, y_train, y_val, y_test,
                         feature_names, class_counts, scaler
     """
-    df = engineer_features(df)
+    if split_strategy not in {"random", "temporal"}:
+        raise ValueError("split_strategy must be 'random' or 'temporal'.")
+    if not 0 < test_size < 1 or not 0 < val_size < 1 - test_size:
+        raise ValueError("Require 0 < test_size < 1 and 0 < val_size < 1 - test_size.")
 
+    row_indices = np.arange(len(df))
+    raw_time = df["Time"].to_numpy(dtype=float)
+    df = engineer_features(df)
     X = df[FEATURE_COLS].values
     y = df[TARGET_COL].values
-    row_indices = np.arange(len(df))
 
-    # Stratified split — critical at 0.17% minority class
-    X_temp, X_test, y_temp, y_test, rows_temp, test_indices = train_test_split(
-        X, y, row_indices, test_size=test_size, stratify=y, random_state=random_state
-    )
-    val_fraction = val_size / (1 - test_size)
-    X_train, X_val, y_train, y_val, train_indices, val_indices = train_test_split(
-        X_temp, y_temp, rows_temp, test_size=val_fraction, stratify=y_temp,
-        random_state=random_state
-    )
+    if split_strategy == "random":
+        # Stratified split — critical at 0.17% minority class
+        X_temp, X_test, y_temp, y_test, rows_temp, test_indices = train_test_split(
+            X, y, row_indices, test_size=test_size, stratify=y, random_state=random_state
+        )
+        val_fraction = val_size / (1 - test_size)
+        X_train, X_val, y_train, y_val, train_indices, val_indices = train_test_split(
+            X_temp, y_temp, rows_temp, test_size=val_fraction, stratify=y_temp,
+            random_state=random_state
+        )
+    else:
+        # Keep time order: fit on the earliest segment, calibrate/tune on the
+        # following segment, and evaluate once on the latest segment.
+        order = np.argsort(raw_time, kind="stable")
+        train_end = int(len(order) * (1 - test_size - val_size))
+        validation_end = int(len(order) * (1 - test_size))
+        train_indices = order[:train_end]
+        val_indices = order[train_end:validation_end]
+        test_indices = order[validation_end:]
+        X_train, y_train = X[train_indices], y[train_indices]
+        X_val, y_val = X[val_indices], y[val_indices]
+        X_test, y_test = X[test_indices], y[test_indices]
+        for split_name, labels in (
+            ("train", y_train), ("validation", y_val), ("test", y_test)
+        ):
+            if np.unique(labels).size != 2:
+                raise ValueError(
+                    f"Temporal {split_name} split must contain both target classes."
+                )
 
     # Scale features — fit ONLY on train
     scaler = StandardScaler()
@@ -166,6 +193,7 @@ def preprocess(
         "train_indices": train_indices,
         "validation_indices": val_indices,
         "test_indices": test_indices,
+        "split_strategy": split_strategy,
     }
 
 

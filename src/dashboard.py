@@ -301,6 +301,38 @@ if tab_choice == "📊 Model Comparison & Audit":
                 """
             )
 
+        temporal_metrics_path = os.path.join(ROOT, "outputs", "time_holdout", "model_comparison.json")
+        temporal_calibration_path = os.path.join(ROOT, "outputs", "time_holdout", "calibration_evaluation.json")
+        if os.path.isfile(temporal_metrics_path) and os.path.isfile(temporal_calibration_path):
+            with open(temporal_metrics_path, "r", encoding="utf-8") as file:
+                temporal_metrics = json.load(file)
+            with open(temporal_calibration_path, "r", encoding="utf-8") as file:
+                temporal_calibration = json.load(file)
+            temporal_model = temporal_metrics["asymmetric_model"]
+            time_windows = temporal_metrics["metadata"]["split_time_ranges"]
+            temporal_interval = temporal_calibration["brier_score_bootstrap"]
+            with st.expander("Chronological later-window evaluation"):
+                st.caption(
+                    "Train and validation use earlier transactions; the test window follows them in Time. "
+                    "This is a later segment of the same 48-hour dataset, not an independent future dataset."
+                )
+                temporal_cols = st.columns(4)
+                temporal_cols[0].metric("Forward-time test PR-AUC", f"{temporal_model['average_precision_pr_auc']:.4f}")
+                temporal_cols[1].metric("Forward-time recall", f"{temporal_model['recall']:.2%}")
+                temporal_cols[2].metric("Forward-time threshold", f"{temporal_model['threshold']:.4f}")
+                temporal_cols[3].metric(
+                    "Brier score (bootstrap 95% interval)",
+                    f"{temporal_interval['estimate']:.6f}",
+                    f"[{temporal_interval['lower_95']:.6f}, {temporal_interval['upper_95']:.6f}]",
+                )
+                st.caption(
+                    f"Time windows in source seconds: train {time_windows['train']['start_seconds']:.0f}–"
+                    f"{time_windows['train']['end_seconds']:.0f}; validation "
+                    f"{time_windows['validation']['start_seconds']:.0f}–"
+                    f"{time_windows['validation']['end_seconds']:.0f}; test "
+                    f"{time_windows['test']['start_seconds']:.0f}–{time_windows['test']['end_seconds']:.0f}."
+                )
+
         st.markdown("---")
         st.subheader("🖼️ Generated Evaluation Artifacts")
         plot_tabs = st.tabs(["Confusion Matrices", "PR & ROC Curves", "Threshold Tuning Curves", "SHAP Feature Summary"])
